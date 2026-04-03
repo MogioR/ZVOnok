@@ -1,0 +1,59 @@
+services:
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    command: >-
+      -n
+      --log-file=stdout
+      --lt-cred-mech
+      --fingerprint
+      --no-multicast-peers
+      --no-cli
+      --realm=zvonok
+      --user=${TURN_USER}:${TURN_PASS}
+      --external-ip=${TURN_PUBLIC_IP}/${TURN_PRIVATE_IP}
+      --relay-ip=${TURN_PRIVATE_IP}
+      --listening-ip=${TURN_PRIVATE_IP}
+      --min-port=49160
+      --max-port=49200
+
+  zvonok:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    container_name: zvonok
+    restart: unless-stopped
+    depends_on:
+      - coturn
+
+    ports:
+      - "${HOST_PORT:-8080}:${PORT:-8080}"
+
+    environment:
+      PORT: ${PORT:-8080}
+      STATIC_DIR: ${STATIC_DIR:-./static}
+      TZ: ${TZ:-Europe/Moscow}
+      TURN_HOST: ${TURN_PUBLIC_IP}
+      TURN_USER: ${TURN_USER}
+      TURN_PASS: ${TURN_PASS}
+
+    env_file:
+      - .env
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${PORT:-8080}/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    volumes:
+      - ytdlp_cache:/home/zvonok/.cache
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ytdlp_cache:

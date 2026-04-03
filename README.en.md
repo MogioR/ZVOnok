@@ -39,51 +39,14 @@ Go handles signaling, static file serving, and the music API, while the browser 
 
 ## Deployment
 
-The recommended way to run it is Docker Compose.
+Detailed deployment and CI/CD documentation is kept locally and is not stored in the public repository.
 
-### 1. Prepare environment variables
+For local startup, this is enough:
 
 ```bash
 cp env.example .env
-```
-
-Then open `.env` and set real values for:
-
-- `TURN_PUBLIC_IP` — public server IP
-- `TURN_PRIVATE_IP` — private server IP
-- `TURN_PASS` — TURN password
-- optionally `HOST_PORT`
-
-Your local `.env` should never be committed.
-
-### 2. Start the project
-
-```bash
 docker compose up --build -d
 ```
-
-After startup, the application will be available at:
-
-```text
-http://<SERVER_IP>:<HOST_PORT>
-```
-
-With default local settings, that is usually:
-
-```text
-http://localhost:8080
-```
-
-### 3. What gets started
-
-- `zvonok` — the main application
-- `coturn` — TURN server for WebRTC
-
-### 4. Server requirements
-
-- Docker and Docker Compose must be installed
-- Required ports must be open in the firewall
-- For stable WebRTC with external clients, TURN must be configured correctly
 
 ## Local Development
 
