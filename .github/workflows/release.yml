@@ -37,6 +37,8 @@ jobs:
             IMAGE_REPOSITORY="$DOCKERHUB_USERNAME/${GITHUB_REPOSITORY#*/}"
           fi
 
+          IMAGE_REPOSITORY="$(printf '%s' "$IMAGE_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+
           echo "image_repository=$IMAGE_REPOSITORY" >> "$GITHUB_OUTPUT"
           echo "image_tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 
