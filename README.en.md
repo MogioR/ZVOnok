@@ -11,19 +11,16 @@ If it helps someone, feel free to use it as a starting point.
 A small WebRTC service with a Vue frontend and a Go backend.  
 Go handles signaling, static file serving, and the music API, while the browser runs the realtime communication layer.
 
-## Current Features
+## Features
 
-- Chat
-- Statuses
-- Mobile version
-- Streams with quality selection
-- Ability to queue music from YouTube
-
-## Planned
-
-- Minigames
-- Webcam video
-- Rooms
+- ✅ Chat
+- ✅ Statuses
+- ✅ Mobile version
+- ✅ Streams with quality selection
+- ✅ Ability to queue music from YouTube
+- 🚧 Minigames
+- 🚧 Webcam video
+- 🚧 Rooms
 
 ## Stack
 
