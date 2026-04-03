@@ -513,13 +513,18 @@ export function useConference() {
     connectSignaling(name, avatar)
   }
 
-  function toggleMute() {
-    isMuted.value = !isMuted.value
+  function setMuted(nextMuted) {
+    if (isMuted.value === nextMuted) return
+    isMuted.value = nextMuted
     if (localStream.value) {
       localStream.value.getAudioTracks().forEach((t) => { t.enabled = !isMuted.value })
     }
     if (isMuted.value) { localSpeaking.value = false; sendSignal('speaking', null, { speaking: false }) }
     sendSignal('muted', null, { muted: isMuted.value })
+  }
+
+  function toggleMute() {
+    setMuted(!isMuted.value)
   }
 
   function setStatus(status) {
@@ -658,7 +663,7 @@ export function useConference() {
     chatMessages, chatUnread,
     screenShareSettings,
     musicState,
-    join, leave, toggleMute,
+    join, leave, toggleMute, setMuted,
     setStatus, sendChatMessage, clearChatUnread, setChatOpen,
     startScreenShare, stopScreenShare, setParticipantVolume,
   }

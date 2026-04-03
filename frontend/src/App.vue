@@ -151,7 +151,10 @@
         :unread="chatUnread"
         :screen-share-settings="screenShareSettings"
         :music-playing="musicState.playing"
+        :push-to-talk-enabled="pushToTalkEnabled"
+        :push-to-talk-active="pushToTalkActive"
         @toggle-mute="toggleMute"
+        @toggle-push-to-talk="handleTogglePushToTalk"
         @toggle-screen-share="handleScreenShare"
         @set-status="handleSetStatus"
         @toggle-chat="handleToggleChat"
@@ -162,7 +165,7 @@
       <ChatPanel
         :open="chatOpen"
         :messages="chatMessages"
-        @close="chatOpen = false"
+        @close="handleCloseChat"
         @send="handleSendChat"
       />
 
@@ -204,19 +207,29 @@ const {
   connected, error, hasJoined,
   chatMessages, chatUnread,
   screenShareSettings, musicState,
-  join, leave, toggleMute,
+  join, leave, toggleMute, setMuted,
   setStatus, sendChatMessage, clearChatUnread, setChatOpen,
   startScreenShare, stopScreenShare, setParticipantVolume,
 } = useConference()
 
+const PUSH_TO_TALK_KEY = 'zvonok_push_to_talk_v1'
 const chatOpen    = ref(false)
 const musicOpen   = ref(false)
 const musicVolume = ref(parseFloat(localStorage.getItem('zvonok_music_vol') ?? '1'))
 const musicAudioEl = ref(null)
+const pushToTalkEnabled = ref(localStorage.getItem(PUSH_TO_TALK_KEY) === '1')
+const pushToTalkActive = ref(false)
+
+let pushToTalkWasMuted = false
 
 watch(musicVolume, (v) => {
   localStorage.setItem('zvonok_music_vol', String(v))
   if (musicAudioEl.value) musicAudioEl.value.volume = v * 0.25
+})
+
+watch(pushToTalkEnabled, (enabled) => {
+  localStorage.setItem(PUSH_TO_TALK_KEY, enabled ? '1' : '0')
+  if (!enabled) stopPushToTalk()
 })
 
 // Apply volume when the audio element mounts
@@ -304,6 +317,10 @@ let overflowObserver = null
 onMounted(() => {
   updateRealVh()
   window.addEventListener('resize', updateRealVh)
+  window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('keyup', onGlobalKeyup)
+  window.addEventListener('blur', stopPushToTalk)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 
   nextTick(() => {
     if (stripEl.value) {
@@ -317,9 +334,14 @@ onMounted(() => {
 watch(() => participantsList.value.length, () => nextTick(checkOverflow))
 
 onBeforeUnmount(() => {
+  stopPushToTalk()
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeUp)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('resize', updateRealVh)
+  window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('keyup', onGlobalKeyup)
+  window.removeEventListener('blur', stopPushToTalk)
   overflowObserver?.disconnect()
 })
 
@@ -394,13 +416,77 @@ function handleToggleChat() {
   if (chatOpen.value) clearChatUnread()
 }
 
+function handleCloseChat() {
+  chatOpen.value = false
+  setChatOpen(false)
+}
+
 function handleSendChat(text) {
   sendChatMessage(text)
 }
 
 function handleLeave() {
+  stopPushToTalk()
   chatOpen.value = false
+  setChatOpen(false)
   leave()
+}
+
+function handleTogglePushToTalk() {
+  const nextEnabled = !pushToTalkEnabled.value
+  pushToTalkEnabled.value = nextEnabled
+
+  if (nextEnabled) {
+    stopPushToTalk()
+    if (localStream.value && !isMuted.value) setMuted(true)
+  }
+}
+
+function isTypingContext(target) {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.closest('.chat-panel')) return true
+  if (target.isContentEditable || target.closest('[contenteditable="true"]')) return true
+  return ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName)
+}
+
+function shouldStartPushToTalk(e) {
+  return (
+    e.code === 'Space' &&
+    !e.repeat &&
+    pushToTalkEnabled.value &&
+    hasJoined.value &&
+    !!localStream.value &&
+    !pushToTalkActive.value &&
+    !isTypingContext(e.target)
+  )
+}
+
+function onGlobalKeydown(e) {
+  if (!shouldStartPushToTalk(e)) return
+  if (!isMuted.value) return
+
+  e.preventDefault()
+  pushToTalkWasMuted = true
+  pushToTalkActive.value = true
+  setMuted(false)
+}
+
+function onGlobalKeyup(e) {
+  if (e.code !== 'Space' || !pushToTalkActive.value) return
+  e.preventDefault()
+  stopPushToTalk()
+}
+
+function stopPushToTalk() {
+  if (!pushToTalkActive.value) return
+
+  pushToTalkActive.value = false
+  if (pushToTalkWasMuted) setMuted(true)
+  pushToTalkWasMuted = false
+}
+
+function onVisibilityChange() {
+  if (document.hidden) stopPushToTalk()
 }
 </script>
 

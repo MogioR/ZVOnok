@@ -19,6 +19,20 @@
         <span class="btn-label">{{ isMuted ? 'МИК ВЫКЛ' : 'МИК ВКЛ' }}</span>
       </button>
 
+      <button
+        class="ctrl-btn"
+        :class="pushToTalkEnabled ? (pushToTalkActive ? 'btn-ptt-live' : 'btn-ptt-active') : 'btn-default'"
+        :title="pushToTalkEnabled ? 'Push to Talk: удерживайте пробел для разговора' : 'Включить Push to Talk на пробел'"
+        @click="$emit('toggle-push-to-talk')"
+      >
+        <span class="btn-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 15c1.93 0 3.5-1.57 3.5-3.5v-4a3.5 3.5 0 1 0-7 0v4c0 1.93 1.57 3.5 3.5 3.5zm6-3.5a1 1 0 1 0-2 0 4 4 0 1 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.59A6 6 0 0 0 18 11.5z"/>
+          </svg>
+        </span>
+        <span class="btn-label">{{ pushToTalkEnabled ? (pushToTalkActive ? 'PTT LIVE' : 'PTT SPACE') : 'PTT OFF' }}</span>
+      </button>
+
       <!-- Screen share + settings gear -->
       <div class="share-cluster">
         <button
@@ -135,9 +149,11 @@ const props = defineProps({
   unread:              { type: Number,  default: 0 },
   screenShareSettings: { type: Object,  default: () => ({}) },
   musicPlaying:        { type: Boolean, default: false },
+  pushToTalkEnabled:   { type: Boolean, default: false },
+  pushToTalkActive:    { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['toggle-mute', 'toggle-screen-share', 'toggle-chat', 'toggle-music', 'set-status', 'leave'])
+const emit = defineEmits(['toggle-mute', 'toggle-push-to-talk', 'toggle-screen-share', 'toggle-chat', 'toggle-music', 'set-status', 'leave'])
 
 const showStatusPicker = ref(false)
 const statusWrapEl = ref(null)
@@ -221,6 +237,21 @@ onBeforeUnmount(() => document.removeEventListener('click', onClickOutside))
 
 .btn-default { background: rgba(30,30,63,0.5); border-color: #2e2e5f; color: #7070a0; }
 .btn-default:hover { border-color: #00f5ff; color: #00f5ff; background: rgba(0,245,255,0.07); }
+
+.btn-ptt-active {
+  background: rgba(157,78,221,0.12);
+  border-color: #9d4edd;
+  color: #c8a0f0;
+}
+.btn-ptt-active:hover { box-shadow: 0 0 16px rgba(157,78,221,0.28); }
+
+.btn-ptt-live {
+  background: rgba(0,245,255,0.14);
+  border-color: #00f5ff;
+  color: #00f5ff;
+  box-shadow: 0 0 16px rgba(0,245,255,0.22);
+}
+.btn-ptt-live:hover { box-shadow: 0 0 18px rgba(0,245,255,0.32); }
 
 .btn-cyan-active {
   background: rgba(0,245,255,0.1); border-color: #00f5ff; color: #00f5ff;
