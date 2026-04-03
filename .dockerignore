@@ -1,0 +1,22 @@
+# Dependencies & build artefacts
+frontend/node_modules/
+frontend/dist/
+backend/static/
+backend/zvonok
+
+# VCS
+.git/
+.gitignore
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Secrets — never bake into image
+.env
+.env.*
+
+# Docs
+*.md
