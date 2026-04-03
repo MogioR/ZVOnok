@@ -16,9 +16,6 @@ jobs:
   build:
     name: Build and push image
     runs-on: ubuntu-latest
-    outputs:
-      image_repository: ${{ steps.vars.outputs.image_repository }}
-      image_tag: ${{ steps.vars.outputs.image_tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -69,14 +66,33 @@ jobs:
     needs:
       - build
     steps:
+      - name: Resolve image tags
+        id: vars
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
+        run: |
+          set -eu
+
+          if [ -n "$DOCKERHUB_REPOSITORY" ]; then
+            IMAGE_REPOSITORY="$DOCKERHUB_REPOSITORY"
+          else
+            IMAGE_REPOSITORY="$DOCKERHUB_USERNAME/${GITHUB_REPOSITORY#*/}"
+          fi
+
+          IMAGE_REPOSITORY="$(printf '%s' "$IMAGE_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+
+          echo "image_repository=$IMAGE_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           SERVER_APP_DIR: ${{ secrets.SERVER_APP_DIR }}
-          IMAGE_REPOSITORY: ${{ needs.build.outputs.image_repository }}
-          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          IMAGE_REPOSITORY: ${{ steps.vars.outputs.image_repository }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
