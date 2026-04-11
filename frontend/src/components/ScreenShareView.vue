@@ -84,7 +84,7 @@
         class="screen-video"
         autoplay
         playsinline
-        :muted="isLocalActive"
+        :muted="isLocalActive || hasScreenAudio"
       />
       <div v-if="!activeStream" class="no-stream">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.3">
@@ -106,7 +106,7 @@
           class="split-video"
           autoplay
           playsinline
-          :muted="s.id === localId"
+          :muted="s.id === localId || s.hasScreenAudio"
         />
         <!-- Overlay: name always visible at bottom, volume on hover -->
         <div class="cell-footer">
@@ -147,7 +147,7 @@ const props = defineProps({
   localId:  { type: String, default: null },
 })
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'volume-change'])
 
 // ─── View mode ─────────────────────────────────────────────────────────────
 const mode = ref('single')
@@ -173,6 +173,7 @@ const activeSharer = computed(() =>
 const activeName   = computed(() => activeSharer.value?.name ?? null)
 const activeStream = computed(() => activeSharer.value?.screenStream ?? null)
 const isLocalActive = computed(() => activeSharer.value?.id === props.localId)
+const hasScreenAudio = computed(() => !!activeSharer.value?.hasScreenAudio)
 
 watch(
   activeStream,
@@ -187,8 +188,17 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => [resolvedActiveId.value, activeSharer.value?.volume],
+  () => {
+    const v = activeSharer.value?.volume
+    if (typeof v === 'number') singleVol.value = v
+  },
+)
+
 function applySingleVol() {
   if (singleVideoEl.value) singleVideoEl.value.volume = singleVol.value
+  if (resolvedActiveId.value) emit('volume-change', resolvedActiveId.value, singleVol.value)
 }
 
 // ─── Split mode ────────────────────────────────────────────────────────────
@@ -256,6 +266,7 @@ function setSplitVol(id, val) {
   splitVols.value = { ...splitVols.value, [id]: val }
   const el = splitRefs.get(id)
   if (el) el.volume = val
+  emit('volume-change', id, val)
 }
 </script>
 

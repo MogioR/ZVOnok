@@ -41,6 +41,19 @@ function fetchIceServers() {
   return iceServersPromise
 }
 
+/** Звук экрана/вкладки может прийти до видео; не перезаписывать им микрофон в audioEl. */
+function likelyDisplayCaptureAudio(track) {
+  if (!track || track.kind !== 'audio') return false
+  const L = (track.label || '').toLowerCase()
+  if (/(microphone|микрофон|\bmic\b|headset|headphone|headphones|earphone|наушники|встроенный|built-in audio|array microphone)/.test(L)) {
+    return false
+  }
+  if (/(display|screen|window|system|desktop|tab|capture|share|stereo mix|что воспроизводится|вкладка)/.test(L)) {
+    return true
+  }
+  return false
+}
+
 export function useConference() {
   const myId = shallowRef(null)
   const myInfo = shallowRef(null)
@@ -72,17 +85,84 @@ export function useConference() {
     } catch {}
   }
 
+  // ─── Quiz states (server-driven, received via WebSocket broadcasts) ──────────
+  const quizState      = ref(null)  // anime quiz  — QuizState or null
+  const musicQuizState = ref(null)  // music quiz  — MusicQuizState or null
+
+  async function fetchQuizStates() {
+    try {
+      const [qr, mr] = await Promise.allSettled([
+        fetch('/api/quiz/state'),
+        fetch('/api/musicquiz/state'),
+      ])
+      if (qr.status === 'fulfilled' && qr.value.ok) quizState.value = await qr.value.json()
+      if (mr.status === 'fulfilled' && mr.value.ok) musicQuizState.value = await mr.value.json()
+    } catch {}
+  }
+
   // ─── Screen share settings (persisted) ──────────────────────────────────────
   const SCREEN_SETTINGS_KEY = 'zvonok_screen_settings_v1'
   const screenShareSettings = reactive({
     resolution: 'auto',  // 'auto' | '1920x1080' | '1280x720' | '854x480' | '640x360'
     fps: 30,             // 5 | 15 | 30 | 60
-    bitrate: 0,          // kbps; 0 = unlimited
-    ...(() => { try { return JSON.parse(localStorage.getItem(SCREEN_SETTINGS_KEY) ?? '{}') } catch { return {} } })(),
+    detail: 'balanced',  // 'low' | 'balanced' | 'high' — авто-битрейт с запасом
+    ...(() => {
+      try {
+        const raw = JSON.parse(localStorage.getItem(SCREEN_SETTINGS_KEY) ?? '{}')
+        // migrate legacy bitrate (kbps) → detail preset
+        if (raw && 'bitrate' in raw && !('detail' in raw)) {
+          const br = raw.bitrate
+          delete raw.bitrate
+          raw.detail = br === 0 || br >= 15000 ? 'high' : br >= 4000 ? 'balanced' : 'low'
+        }
+        return raw
+      } catch { return {} }
+    })(),
   })
   watch(screenShareSettings, (s) => {
     localStorage.setItem(SCREEN_SETTINGS_KEY, JSON.stringify({ ...s }))
   }, { deep: true })
+
+  let bitrateApplyTimer = null
+
+  /** Авто-битрейт по разрешению, FPS и уровню детализации (с ~15% запасом). */
+  function computeVideoBitrateKbps(s) {
+    const { resolution, fps, detail } = s
+    let w = 1920
+    let h = 1080
+    if (resolution && resolution !== 'auto') {
+      const parts = resolution.split('x').map(Number)
+      if (parts.length === 2 && parts.every((n) => Number.isFinite(n) && n > 0)) {
+        ;[w, h] = parts
+      }
+    }
+    const pixels = w * h
+    const detailMul = detail === 'low' ? 0.58 : detail === 'high' ? 1.42 : 1
+    // ~0.00008 kbps per pixel·frame at balanced 1080p30 → ~5 Mbit/s; capped for uplink safety
+    let kbps = pixels * fps * 0.00008 * detailMul * 1.15
+    kbps = Math.round(Math.min(40000, Math.max(600, kbps)))
+    return kbps
+  }
+
+  async function applyBitrateToAllPeers(kbps) {
+    for (const peerId of Object.keys(peerMeta)) {
+      await applyBitrateToPc(peerMeta[peerId].pc, kbps)
+    }
+  }
+
+  watch(
+    screenShareSettings,
+    () => {
+      if (!isScreenSharing.value) return
+      clearTimeout(bitrateApplyTimer)
+      bitrateApplyTimer = setTimeout(() => {
+        bitrateApplyTimer = null
+        const kbps = computeVideoBitrateKbps(screenShareSettings)
+        applyBitrateToAllPeers(kbps)
+      }, 350)
+    },
+    { deep: true },
+  )
 
   // Track whether the chat panel is open so we skip the unread counter
   let chatPanelOpen = false
@@ -148,6 +228,7 @@ export function useConference() {
       }
       participants.forEach((p) => {
         if (p.audioEl) { p.audioEl.pause(); p.audioEl.srcObject = null }
+        if (p.screenAudioEl) { p.screenAudioEl.pause(); p.screenAudioEl.srcObject = null }
       })
       participants.clear()
 
@@ -175,8 +256,9 @@ export function useConference() {
         // Re-broadcast our current state to peers that may have missed it
         if (isMuted.value) sendSignal('muted', null, { muted: true })
         if (myStatus.value) sendSignal('status', null, { status: myStatus.value })
-        // Fetch current music queue state from server
+        // Fetch current music queue state and quiz states from server
         fetchMusicState()
+        fetchQuizStates()
         break
       }
 
@@ -193,6 +275,7 @@ export function useConference() {
         closePeerConnection(id)
         const p = participants.get(id)
         if (p?.audioEl) { p.audioEl.pause(); p.audioEl.srcObject = null }
+        if (p?.screenAudioEl) { p.screenAudioEl.pause(); p.screenAudioEl.srcObject = null }
         participants.delete(id)
         if (activeScreenSharer.value === id) {
           const others = screenSharersList.value.filter((pp) => pp.id !== id)
@@ -227,7 +310,12 @@ export function useConference() {
         const p = participants.get(msg.from)
         if (p && !msg.payload.active) {
           p.hasScreenShare = false
+          p.hasScreenAudio = false
           p.screenStream = null
+          if (p.screenAudioEl) {
+            p.screenAudioEl.pause()
+            p.screenAudioEl.srcObject = null
+          }
           if (activeScreenSharer.value === msg.from) {
             const others = screenSharersList.value.filter((pp) => pp.id !== msg.from)
             activeScreenSharer.value = others[0]?.id ?? null
@@ -238,6 +326,16 @@ export function useConference() {
 
       case 'music-state': {
         musicState.value = msg.payload
+        break
+      }
+
+      case 'quiz-state': {
+        quizState.value = msg.payload
+        break
+      }
+
+      case 'musicquiz-state': {
+        musicQuizState.value = msg.payload
         break
       }
 
@@ -256,6 +354,12 @@ export function useConference() {
         if (!chatPanelOpen) chatUnread.value++
         break
       }
+
+      case 'game': {
+        const { ns, event, data } = msg.payload ?? {}
+        _gameHandlers.forEach((h) => h(msg.from, ns, event, data ?? {}))
+        break
+      }
     }
   }
 
@@ -271,10 +375,12 @@ export function useConference() {
         muted: false,
         status: null,
         hasScreenShare: false,
+        hasScreenAudio: false,
         audioStream: null,
         screenStream: null,
         volume: 1.0,
         audioEl: null,
+        screenAudioEl: null,
       })
     }
   }
@@ -327,8 +433,11 @@ export function useConference() {
       if (track.kind === 'video') {
         updateParticipant(peerId, { hasScreenShare: true, screenStream: markRaw(stream) })
         if (!activeScreenSharer.value) activeScreenSharer.value = peerId
+        recoverMicIfScreenAudioReplacedMicInAudioEl(peerId, stream)
         track.onended = () => {
-          updateParticipant(peerId, { hasScreenShare: false, screenStream: null })
+          const p = participants.get(peerId)
+          if (p?.screenAudioEl) { p.screenAudioEl.pause(); p.screenAudioEl.srcObject = null }
+          updateParticipant(peerId, { hasScreenShare: false, hasScreenAudio: false, screenStream: null })
           if (activeScreenSharer.value === peerId) {
             const others = screenSharersList.value.filter((p) => p.id !== peerId)
             activeScreenSharer.value = others[0]?.id ?? null
@@ -336,7 +445,32 @@ export function useConference() {
         }
       } else if (track.kind === 'audio') {
         const p = participants.get(peerId)
-        if (!p?.screenStream || p.screenStream.id !== stream.id) {
+        // Звук вкладки/системы — тот же MediaStream, что и видео экрана: отдельный <audio>.
+        if (p?.screenStream && p.screenStream.id === stream.id) {
+          setupScreenAudioPlayback(peerId, track)
+        } else if (!p?.screenStream) {
+          // Видео экрана ещё нет: второй аудио-поток не должен вытеснять микрофон из audioEl.
+          const curSid = p?.audioEl?.srcObject?.id
+          if (curSid && curSid !== stream.id) {
+            if (likelyDisplayCaptureAudio(track)) {
+              setupScreenAudioPlayback(peerId, track)
+            } else {
+              const curTrack = p.audioEl?.srcObject?.getAudioTracks?.()[0]
+              if (curTrack && likelyDisplayCaptureAudio(curTrack)) {
+                setupScreenAudioPlayback(peerId, curTrack)
+                p.audioEl.pause()
+                p.audioEl.srcObject = null
+              }
+              updateParticipant(peerId, { audioStream: markRaw(stream) })
+              setupAudioPlayback(peerId, stream)
+            }
+          } else if (likelyDisplayCaptureAudio(track)) {
+            setupScreenAudioPlayback(peerId, track)
+          } else {
+            updateParticipant(peerId, { audioStream: markRaw(stream) })
+            setupAudioPlayback(peerId, stream)
+          }
+        } else {
           updateParticipant(peerId, { audioStream: markRaw(stream) })
           setupAudioPlayback(peerId, stream)
         }
@@ -462,6 +596,72 @@ export function useConference() {
     p.audioEl = markRaw(audio)
   }
 
+  function setupScreenAudioPlayback(peerId, track) {
+    const p = participants.get(peerId)
+    if (!p) {
+      setTimeout(() => setupScreenAudioPlayback(peerId, track), 100)
+      return
+    }
+
+    const stream = new MediaStream([track])
+    p.hasScreenAudio = true
+    track.onended = () => {
+      const p2 = participants.get(peerId)
+      if (!p2) return
+      p2.hasScreenAudio = false
+      if (p2.screenAudioEl) {
+        p2.screenAudioEl.pause()
+        p2.screenAudioEl.srcObject = null
+      }
+    }
+
+    if (p.screenAudioEl) {
+      p.screenAudioEl.srcObject = stream
+      p.screenAudioEl.volume = p.volume ?? 1
+      p.screenAudioEl.play().catch(() => {})
+      return
+    }
+
+    const audio = new Audio()
+    audio.srcObject = stream
+    audio.volume = p.volume ?? 1
+    audio.autoplay = true
+    audio.play().catch(() => {
+      const unlock = () => audio.play().catch(() => {})
+      document.addEventListener('click', unlock, { once: true })
+      document.addEventListener('keydown', unlock, { once: true })
+    })
+    p.screenAudioEl = markRaw(audio)
+  }
+
+  /**
+   * Если звук экрана попал в audioEl до прихода видео (один MediaStream), переносим его в screenAudioEl
+   * и подключаем микрофон с другого receiver.
+   */
+  function recoverMicIfScreenAudioReplacedMicInAudioEl(peerId, screenStream) {
+    const p = participants.get(peerId)
+    const meta = peerMeta[peerId]
+    if (!p || !meta?.pc) return
+
+    const screenAudio = screenStream.getAudioTracks()[0]
+    if (!screenAudio) return
+
+    if (p.audioEl?.srcObject?.id !== screenStream.id) return
+
+    setupScreenAudioPlayback(peerId, screenAudio)
+    p.audioEl.pause()
+    p.audioEl.srcObject = null
+
+    for (const r of meta.pc.getReceivers()) {
+      const t = r.track
+      if (!t || t.kind !== 'audio' || t.id === screenAudio.id) continue
+      const ms = new MediaStream([t])
+      updateParticipant(peerId, { audioStream: markRaw(ms) })
+      setupAudioPlayback(peerId, ms)
+      break
+    }
+  }
+
   // ─── VAD ───────────────────────────────────────────────────────────────────
 
   function startVAD(stream) {
@@ -532,6 +732,26 @@ export function useConference() {
     sendSignal('status', null, { status })
   }
 
+  // ─── Game Event System ───────────────────────────────────────────────────────
+  // Game events are broadcast to all peers via the signaling channel.
+  // They are NOT displayed in chat — the 'game' type is filtered out above.
+
+  const _gameHandlers = []
+
+  function sendGameEvent(ns, event, data = {}) {
+    sendSignal('game', null, { ns, event, data })
+  }
+
+  function onGameEvent(handler) {
+    _gameHandlers.push(handler)
+    return () => {
+      const i = _gameHandlers.indexOf(handler)
+      if (i !== -1) _gameHandlers.splice(i, 1)
+    }
+  }
+
+  // ─── Chat ────────────────────────────────────────────────────────────────────
+
   function sendChatMessage(text) {
     if (!text.trim()) return
     const timestamp = Date.now()
@@ -571,7 +791,7 @@ export function useConference() {
 
   async function startScreenShare() {
     try {
-      const { resolution, fps, bitrate } = screenShareSettings
+      const { resolution, fps } = screenShareSettings
 
       // Build video constraints
       const videoConstraints = {
@@ -599,10 +819,8 @@ export function useConference() {
             meta.negotiationVersion++
           }
         })
-        // Apply bitrate constraint after renegotiation completes (slight delay)
-        if (bitrate > 0) {
-          setTimeout(() => applyBitrateToPc(meta.pc, bitrate), 1500)
-        }
+        const kbps = computeVideoBitrateKbps(screenShareSettings)
+        setTimeout(() => applyBitrateToPc(meta.pc, kbps), 1500)
       }
 
       sendSignal('screen-share', null, { active: true })
@@ -636,16 +854,21 @@ export function useConference() {
     if (!p) return
     p.volume = volume
     if (p.audioEl) p.audioEl.volume = volume
+    if (p.screenAudioEl) p.screenAudioEl.volume = volume
   }
 
   function leave() {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    if (bitrateApplyTimer) { clearTimeout(bitrateApplyTimer); bitrateApplyTimer = null }
     stopVAD()
     if (localStream.value) { localStream.value.getTracks().forEach((t) => t.stop()); localStream.value = null }
     const stream = screenStream.value
     if (stream) { stream.getTracks().forEach((t) => t.stop()); screenStream.value = null }
     for (const peerId of Object.keys(peerMeta)) { peerMeta[peerId].pc.close(); delete peerMeta[peerId] }
-    participants.forEach((p) => { if (p.audioEl) { p.audioEl.pause(); p.audioEl.srcObject = null } })
+    participants.forEach((p) => {
+      if (p.audioEl) { p.audioEl.pause(); p.audioEl.srcObject = null }
+      if (p.screenAudioEl) { p.screenAudioEl.pause(); p.screenAudioEl.srcObject = null }
+    })
     participants.clear()
     if (ws) { ws.close(); ws = null }
     myId.value = null; myInfo.value = null; hasJoined.value = false; connected.value = false
@@ -666,5 +889,7 @@ export function useConference() {
     join, leave, toggleMute, setMuted,
     setStatus, sendChatMessage, clearChatUnread, setChatOpen,
     startScreenShare, stopScreenShare, setParticipantVolume,
+    sendGameEvent, onGameEvent,
+    quizState, musicQuizState,
   }
 }

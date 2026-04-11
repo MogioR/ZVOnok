@@ -48,16 +48,16 @@
           </div>
         </div>
 
-        <!-- Bitrate -->
+        <!-- Detail / effective bitrate (auto) -->
         <div class="setting-row">
-          <span class="setting-label">Битрейт</span>
+          <span class="setting-label">Детализация</span>
           <div class="chips">
             <button
-              v-for="opt in BITRATES"
+              v-for="opt in DETAIL_PRESETS"
               :key="opt.value"
               class="chip"
-              :class="{ active: settings.bitrate === opt.value }"
-              @click="settings.bitrate = opt.value"
+              :class="{ active: settings.detail === opt.value }"
+              @click="settings.detail = opt.value"
             >{{ opt.label }}</button>
           </div>
         </div>
@@ -68,7 +68,8 @@
         </div>
 
         <div class="popup-note">
-          Разрешение и FPS — рекомендуемые значения;<br/>браузер может скорректировать под возможности системы
+          Разрешение и FPS применяются при следующем запуске трансляции.<br/>
+          Детализация и битрейт можно менять во время эфира — лимит считается автоматически с запасом.
         </div>
       </div>
     </Transition>
@@ -94,16 +95,10 @@ const FPS_OPTIONS = [
   { value: 60, label: '60' },
 ]
 
-const BITRATES = [
-  { value: 0,     label: 'Авто' },
-  { value: 40000, label: '40 Мб/с' },
-  { value: 20000, label: '20 Мб/с' },
-  { value: 15000, label: '15 Мб/с' },
-  { value: 8000,  label: '8 Мб/с' },
-  { value: 4000,  label: '4 Мб/с' },
-  { value: 2000,  label: '2 Мб/с' },
-  { value: 1000,  label: '1 Мб/с' },
-  { value: 500,   label: '500 Кб/с' },
+const DETAIL_PRESETS = [
+  { value: 'low',       label: 'Меньше' },
+  { value: 'balanced',  label: 'Баланс' },
+  { value: 'high',      label: 'Больше' },
 ]
 
 const props = defineProps({
@@ -115,14 +110,26 @@ const wrapEl = ref(null)
 
 const RES_LABELS = Object.fromEntries(RESOLUTIONS.map((r) => [r.value, r.label]))
 
+function estimateBitrateLabel() {
+  const { resolution, fps, detail: detRaw } = props.settings
+  const detail = detRaw ?? 'balanced'
+  let w = 1920
+  let h = 1080
+  if (resolution && resolution !== 'auto') {
+    const parts = resolution.split('x').map(Number)
+    if (parts.length === 2 && parts.every((n) => Number.isFinite(n) && n > 0)) [w, h] = parts
+  }
+  const pixels = w * h
+  const detailMul = detail === 'low' ? 0.58 : detail === 'high' ? 1.42 : 1
+  let kbps = pixels * fps * 0.00008 * detailMul * 1.15
+  kbps = Math.round(Math.min(40000, Math.max(600, kbps)))
+  return kbps >= 1000 ? `~${Math.round(kbps / 1000)} Мб/с` : `~${kbps} Кб/с`
+}
+
 const summaryText = computed(() => {
   const res = RES_LABELS[props.settings.resolution] ?? props.settings.resolution
-  const br = props.settings.bitrate === 0
-    ? 'авто'
-    : props.settings.bitrate >= 1000
-      ? `${props.settings.bitrate / 1000} Мб/с`
-      : `${props.settings.bitrate} Кб/с`
-  return `${res} · ${props.settings.fps} fps · ${br}`
+  const det = DETAIL_PRESETS.find((d) => d.value === (props.settings.detail ?? 'balanced'))?.label ?? 'Баланс'
+  return `${res} · ${props.settings.fps} fps · ${det} · ${estimateBitrateLabel()}`
 })
 
 function onOutside(e) {

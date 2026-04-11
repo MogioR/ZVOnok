@@ -552,43 +552,87 @@ func (m *MusicQuizManager) advanceToNext() {
 
 // ─── Public actions ───────────────────────────────────────────────────────────
 
-// pickUniqueAnimeThemes shuffles themes and picks up to n entries such that
-// each anime name appears at most once. If there aren't enough distinct anime
-// to fill n slots, the remaining slots are filled with any remaining themes
-// (always unique by theme ID).
-func pickUniqueAnimeThemes(themes []MusicQuizTheme, n int) []MusicQuizTheme {
-	shuffled := make([]MusicQuizTheme, len(themes))
-	copy(shuffled, themes)
-	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+// animeFranchiseKey normalises an anime name to a franchise root so that
+// variants of the same series collapse to the same key, e.g.:
+//   "One Piece" / "One Piece Film: Red" / "One Piece: Stampede" → "one piece"
+//   "Dragon Ball" / "Dragon Ball Z" / "Dragon Ball GT" / "Dragon Ball Super" → "dragon ball"
+//   "Sword Art Online" / "Sword Art Online II" / "Sword Art Online: Alicization" → "sword art"
+//
+// Rules (applied in order):
+//  1. Strip known film/movie/special/ova markers (e.g. " film", " movie").
+//  2. Strip subtitle introduced by ": " when the base is ≥ 6 chars
+//     (avoids false positive on "Re:Zero" whose colon is at position 2).
+//  3. For names that are still 3+ words, keep only the first two words — this
+//     collapses sequel suffixes like " Z", " GT", " Super", " II", " Season 2".
+func animeFranchiseKey(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
 
-	seenAnime := make(map[string]bool, n)
-	result := make([]MusicQuizTheme, 0, n)
-
-	// First pass: one theme per unique anime
-	for _, t := range shuffled {
-		if len(result) >= n {
+	for _, marker := range []string{" film", " movie", " the movie", " special", " ova"} {
+		if i := strings.Index(s, marker); i > 2 {
+			s = strings.TrimSpace(s[:i])
 			break
-		}
-		if !seenAnime[t.AnimeName] {
-			seenAnime[t.AnimeName] = true
-			result = append(result, t)
 		}
 	}
 
-	// Second pass: if pool has too few distinct anime, fill remaining slots
-	// with any unused theme IDs (allows same anime, but never same track twice)
+	if i := strings.Index(s, ": "); i >= 6 {
+		s = strings.TrimSpace(s[:i])
+	}
+
+	// Collapse sequel-word suffixes: "Dragon Ball Z/GT/Super" → "dragon ball"
+	if words := strings.Fields(s); len(words) >= 3 {
+		return words[0] + " " + words[1]
+	}
+	return s
+}
+
+// pickUniqueAnimeThemes implements "anime-first" selection:
+//  1. Group all themes by franchise key (animeFranchiseKey).
+//  2. Shuffle the list of unique franchises randomly.
+//  3. For each franchise pick one random theme — guaranteeing NO franchise
+//     repeats regardless of how many tracks it has in the pool.
+//
+// If there are fewer franchises than n, falls back to filling remaining slots
+// with any unused theme IDs (never the same track twice).
+func pickUniqueAnimeThemes(themes []MusicQuizTheme, n int) []MusicQuizTheme {
+	// 1. Group by franchise
+	byFranchise := make(map[string][]MusicQuizTheme, 256)
+	for i := range themes {
+		key := animeFranchiseKey(themes[i].AnimeName)
+		byFranchise[key] = append(byFranchise[key], themes[i])
+	}
+
+	// 2. Shuffle franchise keys
+	keys := make([]string, 0, len(byFranchise))
+	for k := range byFranchise {
+		keys = append(keys, k)
+	}
+	rand.Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
+
+	// 3. Pick one random theme per franchise
+	result := make([]MusicQuizTheme, 0, n)
+	for _, k := range keys {
+		if len(result) >= n {
+			break
+		}
+		group := byFranchise[k]
+		result = append(result, group[rand.Intn(len(group))])
+	}
+
+	// Fallback: fill remaining slots if pool has too few franchises
 	if len(result) < n {
 		seenID := make(map[int]bool, len(result))
 		for _, t := range result {
 			seenID[t.ID] = true
 		}
-		for _, t := range shuffled {
-			if len(result) >= n {
-				break
-			}
-			if !seenID[t.ID] {
-				seenID[t.ID] = true
-				result = append(result, t)
+		for _, group := range byFranchise {
+			for _, t := range group {
+				if len(result) >= n {
+					break
+				}
+				if !seenID[t.ID] {
+					seenID[t.ID] = true
+					result = append(result, t)
+				}
 			}
 		}
 	}
@@ -616,35 +660,22 @@ func (m *MusicQuizManager) OpenLobby(settings MusicQuizSettings, players []QuizP
 		return fmt.Errorf("пул треков ещё загружается, попробуйте через несколько секунд")
 	}
 
-	// Prefer the popular segment (MAL-matched, sorted by rank).
-	// If the popular segment is large enough, restrict the candidate pool to it so
-	// that every game only picks tracks from well-known anime.
-	// Threshold: need at least 3× the requested rounds in the popular segment.
-	candidate := pool
-	if popular >= settings.Rounds*3 {
-		candidate = pool[:popular]
-	}
+	// Use the entire pool so every franchise has an equal chance of selection.
+	// The anime-first grouping in pickUniqueAnimeThemes already guarantees variety.
+	// The popular/MAL sort is still preserved inside the pool for fallback ordering.
+	_ = popular // kept in snapshot for UI display
 
 	// Filter by allowed types
-	filtered := candidate
+	filtered := pool
 	if len(settings.AllowedTypes) > 0 {
 		typeSet := make(map[string]bool)
 		for _, t := range settings.AllowedTypes {
 			typeSet[strings.ToUpper(t)] = true
 		}
 		filtered = nil
-		for _, th := range candidate {
+		for _, th := range pool {
 			if typeSet[strings.ToUpper(th.Type)] {
 				filtered = append(filtered, th)
-			}
-		}
-		// Fallback to full pool if filtered type has too few results
-		if len(filtered) < settings.Rounds {
-			filtered = nil
-			for _, th := range pool {
-				if typeSet[strings.ToUpper(th.Type)] {
-					filtered = append(filtered, th)
-				}
 			}
 		}
 	}
@@ -784,33 +815,19 @@ func (m *MusicQuizManager) PlayAgain() {
 	m.mu.Unlock()
 
 	m.poolMu.RLock()
-	pool    := m.themePool
-	popular := m.poolPopular
+	pool := m.themePool
 	m.poolMu.RUnlock()
 
-	candidate := pool
-	if popular >= settings.Rounds*3 {
-		candidate = pool[:popular]
-	}
-
-	filtered := candidate
+	filtered := pool
 	if len(settings.AllowedTypes) > 0 {
 		typeSet := make(map[string]bool)
 		for _, t := range settings.AllowedTypes {
 			typeSet[strings.ToUpper(t)] = true
 		}
 		filtered = nil
-		for _, th := range candidate {
+		for _, th := range pool {
 			if typeSet[strings.ToUpper(th.Type)] {
 				filtered = append(filtered, th)
-			}
-		}
-		if len(filtered) < settings.Rounds {
-			filtered = nil
-			for _, th := range pool {
-				if typeSet[strings.ToUpper(th.Type)] {
-					filtered = append(filtered, th)
-				}
 			}
 		}
 	}
@@ -921,12 +938,44 @@ func (m *MusicQuizManager) ServeAgain(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// ServeReloadPool resets a previously failed pool and starts a fresh background
+// fetch. Silently ignored if the pool is already ready or currently loading.
+func (m *MusicQuizManager) ServeReloadPool(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	m.poolMu.Lock()
+	hasError := m.poolError != ""
+	if hasError {
+		m.poolError = ""
+		m.themePool = nil
+		m.poolReady = false
+	}
+	m.poolMu.Unlock()
+	if hasError {
+		m.broadcast() // switch clients back to "loading" state
+		go m.fetchPool()
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // ServeAnimeNames returns a deduplicated, sorted list of anime names from the
 // theme pool. Used by the frontend for autocomplete suggestions in the music quiz.
+// Returns "no-store" cache headers when the pool is not yet ready so that
+// clients don't cache an empty or partial list.
 func (m *MusicQuizManager) ServeAnimeNames(w http.ResponseWriter, r *http.Request) {
 	m.poolMu.RLock()
-	pool := m.themePool
+	pool  := m.themePool
+	ready := m.poolReady
 	m.poolMu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	if !ready {
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode([]string{})
+		return
+	}
 
 	seen := make(map[string]struct{}, len(pool))
 	for _, t := range pool {
@@ -938,7 +987,6 @@ func (m *MusicQuizManager) ServeAnimeNames(w http.ResponseWriter, r *http.Reques
 	}
 	sort.Strings(names)
 
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	json.NewEncoder(w).Encode(names)
 }

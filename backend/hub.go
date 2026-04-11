@@ -268,7 +268,7 @@ func (c *Client) readPump() {
 				payload: msg.Payload,
 			}
 
-		case "speaking", "screen-share", "muted", "status", "chat":
+		case "speaking", "screen-share", "muted", "status", "chat", "game":
 			if !c.joined {
 				continue
 			}

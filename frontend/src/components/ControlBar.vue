@@ -115,6 +115,22 @@
         <span class="btn-label">МУЗЫКА</span>
       </button>
 
+      <!-- Entertainment / Mini-games -->
+      <button
+        class="ctrl-btn"
+        :class="entertainmentOpen ? 'btn-ent-active' : (entertainmentActive ? 'btn-ent-running' : 'btn-default')"
+        title="Развлечения и мини-игры"
+        @click="$emit('toggle-entertainment')"
+      >
+        <span class="btn-icon ent-icon-wrap">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5S14.67 12 15.5 12s1.5.67 1.5 1.5S16.33 15 15.5 15zm3-3c-.83 0-1.5-.67-1.5-1.5S17.67 10 18.5 10s1.5.67 1.5 1.5S19.33 12 18.5 12z"/>
+          </svg>
+          <span v-if="entertainmentActive && !entertainmentOpen" class="ent-pulse" />
+        </span>
+        <span class="btn-label">ИГРЫ</span>
+      </button>
+
       <div class="divider" />
 
       <!-- Leave -->
@@ -149,11 +165,13 @@ const props = defineProps({
   unread:              { type: Number,  default: 0 },
   screenShareSettings: { type: Object,  default: () => ({}) },
   musicPlaying:        { type: Boolean, default: false },
+  entertainmentOpen:   { type: Boolean, default: false },
+  entertainmentActive: { type: Boolean, default: false },
   pushToTalkEnabled:   { type: Boolean, default: false },
   pushToTalkActive:    { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['toggle-mute', 'toggle-push-to-talk', 'toggle-screen-share', 'toggle-chat', 'toggle-music', 'set-status', 'leave'])
+const emit = defineEmits(['toggle-mute', 'toggle-push-to-talk', 'toggle-screen-share', 'toggle-chat', 'toggle-music', 'toggle-entertainment', 'set-status', 'leave'])
 
 const showStatusPicker = ref(false)
 const statusWrapEl = ref(null)
@@ -290,6 +308,35 @@ onBeforeUnmount(() => document.removeEventListener('click', onClickOutside))
 
 .btn-leave { background: rgba(255,41,87,0.08); border-color: #ff2957; color: #ff2957; }
 .btn-leave:hover { background: rgba(255,41,87,0.2); box-shadow: 0 0 16px rgba(255,41,87,0.3); }
+
+.btn-ent-active {
+  background: rgba(157,78,221,0.12);
+  border-color: #c8a0f0;
+  color: #c8a0f0;
+}
+.btn-ent-active:hover { box-shadow: 0 0 16px rgba(157,78,221,0.3); }
+
+.btn-ent-running {
+  background: rgba(255,107,157,0.08);
+  border-color: #ff6b9d;
+  color: #ff6b9d;
+  animation: ent-glow 2s ease-in-out infinite;
+}
+@keyframes ent-glow {
+  0%,100% { box-shadow: 0 0 4px rgba(255,107,157,0.15); }
+  50%      { box-shadow: 0 0 12px rgba(255,107,157,0.4); }
+}
+
+.ent-icon-wrap { position: relative; }
+.ent-pulse {
+  position: absolute;
+  top: -3px; right: -3px;
+  width: 7px; height: 7px;
+  background: #ff6b9d;
+  border-radius: 50%;
+  box-shadow: 0 0 6px #ff6b9d;
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
 
 /* ─── Status icon (emoji) ────────────────────────────────────────────────── */
 .status-icon-text { font-size: 18px; line-height: 1; }

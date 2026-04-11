@@ -51,8 +51,9 @@ func main() {
 	http.HandleFunc("/api/quiz/again",         quiz.ServeAgain)
 
 	// Music quiz game API (server-side state)
-	http.HandleFunc("/api/musicquiz/animenames", musicQuiz.ServeAnimeNames)
-	http.HandleFunc("/api/musicquiz/state",   musicQuiz.ServeState)
+	http.HandleFunc("/api/musicquiz/animenames",  musicQuiz.ServeAnimeNames)
+	http.HandleFunc("/api/musicquiz/reload-pool", musicQuiz.ServeReloadPool)
+	http.HandleFunc("/api/musicquiz/state",       musicQuiz.ServeState)
 	http.HandleFunc("/api/musicquiz/lobby",   musicQuiz.ServeOpenLobby)
 	http.HandleFunc("/api/musicquiz/join",    musicQuiz.ServeJoin)
 	http.HandleFunc("/api/musicquiz/start",   musicQuiz.ServeStart)
