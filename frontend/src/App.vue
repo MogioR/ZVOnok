@@ -29,21 +29,118 @@
 
       <!-- Main content: screen share fills space, participants strip at bottom -->
       <main class="room-main" :class="{ 'chat-open': chatOpen }">
-        <div class="stage-area" :style="stageStyle">
-          <ScreenShareView
-            v-if="allSharers.length > 0"
-            :sharers="allSharers"
-            :active-id="activeScreenSharer"
-            :local-id="myId"
-            @select="activeScreenSharer = $event"
-          />
-          <div v-else class="stage-placeholder">
-            <div class="placeholder-icon">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" opacity="0.15">
-                <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
-              </svg>
-            </div>
+        <div class="stage-area" :class="{ 'has-tabs': isAnyGameActive && allSharers.length > 0 }" :style="stageStyle">
+
+          <!-- ── View-mode tabs (shown when game + stream both active) ─────── -->
+          <div v-if="isAnyGameActive && allSharers.length > 0" class="view-tabs">
+            <button :class="{ active: stageView === 'auto' }" @click="stageView = 'auto'">🎌 Игра</button>
+            <button :class="{ active: stageView === 'stream' }" @click="stageView = 'stream'">📺 Стрим</button>
+            <button :class="{ active: stageView === 'split' }" @click="stageView = 'split'">⊞ Оба</button>
           </div>
+
+          <!-- ── Split layout ──────────────────────────────────────────────── -->
+          <template v-if="isAnyGameActive && allSharers.length > 0 && stageView === 'split'">
+            <div class="stage-split">
+              <div class="split-pane">
+                <AnimeQuizView
+                  v-if="isAnimeQuizActive"
+                  :quiz-state="quizState"
+                  :my-id="myId"
+                  :my-name="myInfo?.name ?? ''"
+                  :my-avatar="myInfo?.avatar ?? ''"
+                  @stop="handleQuizStop"
+                  @join="handleQuizJoin"
+                  @start="handleQuizStart"
+                  @again="handleQuizAgain"
+                  @answer-correct="handleQuizAnswerCorrect"
+                  @retry="handleQuizRetry"
+                />
+                <MusicQuizView
+                  v-else-if="isMusicQuizActive"
+                  :music-quiz-state="musicQuizState"
+                  :my-id="myId"
+                  :my-name="myInfo?.name ?? ''"
+                  :my-avatar="myInfo?.avatar ?? ''"
+                  :volume="musicQuizVolume"
+                  @stop="handleMusicQuizStop"
+                  @join="handleMusicQuizJoin"
+                  @start="handleMusicQuizStart"
+                  @again="handleMusicQuizAgain"
+                  @answer-correct="handleMusicQuizAnswerCorrect"
+                />
+              </div>
+              <div class="split-pane">
+                <ScreenShareView
+                  :sharers="allSharers"
+                  :active-id="activeScreenSharer"
+                  :local-id="myId"
+                  @select="activeScreenSharer = $event"
+                  @volume-change="handleVolumeChange"
+                />
+              </div>
+            </div>
+          </template>
+
+          <!-- ── Stream-only layout (when user picked 'stream') ────────────── -->
+          <template v-else-if="isAnyGameActive && allSharers.length > 0 && stageView === 'stream'">
+            <ScreenShareView
+              :sharers="allSharers"
+              :active-id="activeScreenSharer"
+              :local-id="myId"
+              @select="activeScreenSharer = $event"
+              @volume-change="handleVolumeChange"
+            />
+          </template>
+
+          <!-- ── Game view (default when game active, or stageView==='auto') ─ -->
+          <template v-else-if="isAnimeQuizActive">
+            <AnimeQuizView
+              :quiz-state="quizState"
+              :my-id="myId"
+              :my-name="myInfo?.name ?? ''"
+              :my-avatar="myInfo?.avatar ?? ''"
+              @stop="handleQuizStop"
+              @join="handleQuizJoin"
+              @start="handleQuizStart"
+              @again="handleQuizAgain"
+              @answer-correct="handleQuizAnswerCorrect"
+              @retry="handleQuizRetry"
+            />
+          </template>
+          <template v-else-if="isMusicQuizActive">
+            <MusicQuizView
+              :music-quiz-state="musicQuizState"
+              :my-id="myId"
+              :my-name="myInfo?.name ?? ''"
+              :my-avatar="myInfo?.avatar ?? ''"
+              :volume="musicQuizVolume"
+              @stop="handleMusicQuizStop"
+              @join="handleMusicQuizJoin"
+              @start="handleMusicQuizStart"
+              @again="handleMusicQuizAgain"
+              @answer-correct="handleMusicQuizAnswerCorrect"
+            />
+          </template>
+
+          <!-- ── No game: show stream or placeholder ────────────────────────── -->
+          <template v-else>
+            <ScreenShareView
+              v-if="allSharers.length > 0"
+              :sharers="allSharers"
+              :active-id="activeScreenSharer"
+              :local-id="myId"
+              @select="activeScreenSharer = $event"
+              @volume-change="handleVolumeChange"
+            />
+            <div v-else class="stage-placeholder">
+              <div class="placeholder-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" opacity="0.15">
+                  <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+                </svg>
+              </div>
+            </div>
+          </template>
+
         </div>
 
         <!-- Drag-resize handle -->
@@ -74,6 +171,19 @@
               v-if="musicBotParticipant"
               :participant="musicBotParticipant"
               :speaking="true"
+              @volume-change="handleVolumeChange"
+            />
+            <!-- Anime quiz bot participant (virtual) -->
+            <ParticipantCard
+              v-if="quizBotParticipant"
+              :participant="quizBotParticipant"
+              :speaking="quizState?.phase === 'playing'"
+            />
+            <!-- Music quiz bot participant (virtual) -->
+            <ParticipantCard
+              v-if="musicQuizBotParticipant"
+              :participant="musicQuizBotParticipant"
+              :speaking="musicQuizState?.phase === 'playing'"
               @volume-change="handleVolumeChange"
             />
           </div>
@@ -136,6 +246,17 @@
                     :speaking="true"
                     @volume-change="handleVolumeChange"
                   />
+                  <ParticipantCard
+                    v-if="quizBotParticipant"
+                    :participant="quizBotParticipant"
+                    :speaking="quizState?.phase === 'playing'"
+                  />
+                  <ParticipantCard
+                    v-if="musicQuizBotParticipant"
+                    :participant="musicQuizBotParticipant"
+                    :speaking="musicQuizState?.phase === 'playing'"
+                    @volume-change="handleVolumeChange"
+                  />
                 </div>
               </div>
             </div>
@@ -151,6 +272,8 @@
         :unread="chatUnread"
         :screen-share-settings="screenShareSettings"
         :music-playing="musicState.playing"
+        :entertainment-open="entertainmentOpen"
+        :entertainment-active="isAnyGameActive"
         :push-to-talk-enabled="pushToTalkEnabled"
         :push-to-talk-active="pushToTalkActive"
         @toggle-mute="toggleMute"
@@ -159,6 +282,7 @@
         @set-status="handleSetStatus"
         @toggle-chat="handleToggleChat"
         @toggle-music="handleToggleMusic"
+        @toggle-entertainment="handleToggleEntertainment"
         @leave="handleLeave"
       />
 
@@ -173,6 +297,18 @@
         :open="musicOpen"
         :state="musicState"
         @close="musicOpen = false"
+      />
+
+      <EntertainmentPanel
+        :open="entertainmentOpen"
+        :quiz-phase="quizState?.phase ?? 'idle'"
+        :music-quiz-phase="musicQuizState?.phase ?? 'idle'"
+        :music-quiz-state="musicQuizState"
+        @close="entertainmentOpen = false"
+        @start-quiz="handleStartQuiz"
+        @open-quiz="handleOpenQuiz"
+        @start-music-quiz="handleStartMusicQuiz"
+        @open-music-quiz="handleOpenMusicQuiz"
       />
 
       <!-- Hidden audio element: streams music from server -->
@@ -192,12 +328,24 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useConference } from './composables/useConference.js'
+import {
+  useAnimeQuiz, openLobby as quizOpenLobby, joinLobby as quizJoinLobby,
+  startGame as quizStartGame, stopGame as quizStopGame, playAgain as quizPlayAgain,
+  retryLoad as quizRetryLoad,
+} from './composables/useAnimeQuiz.js'
+import {
+  useMusicQuiz, openLobby as musicQuizOpenLobby, joinLobby as musicQuizJoinLobby,
+  startGame as musicQuizStartGame, stopGame as musicQuizStopGame, playAgain as musicQuizPlayAgain,
+} from './composables/useMusicQuiz.js'
 import JoinModal from './components/JoinModal.vue'
 import ParticipantCard from './components/ParticipantCard.vue'
 import ControlBar from './components/ControlBar.vue'
 import ScreenShareView from './components/ScreenShareView.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import MusicPanel from './components/MusicPanel.vue'
+import EntertainmentPanel from './components/EntertainmentPanel.vue'
+import AnimeQuizView from './components/AnimeQuizView.vue'
+import MusicQuizView from './components/MusicQuizView.vue'
 
 const {
   myId, myInfo, myStatus,
@@ -210,12 +358,29 @@ const {
   join, leave, toggleMute, setMuted,
   setStatus, sendChatMessage, clearChatUnread, setChatOpen,
   startScreenShare, stopScreenShare, setParticipantVolume,
+  quizState, musicQuizState,
 } = useConference()
 
+// Keep composable instances for local data (animePool for autocomplete, screenshots)
+useAnimeQuiz()
+useMusicQuiz()
+
+// ─── Mini-games ──────────────────────────────────────────────────────────────
+const entertainmentOpen = ref(false)
+
+// 3-way view: 'auto' = game takes priority, 'stream' = show only stream, 'split' = side-by-side
+const stageView = ref('auto')
+
+const isAnimeQuizActive  = computed(() => quizState.value?.phase && quizState.value.phase !== 'idle')
+const isMusicQuizActive  = computed(() => musicQuizState.value?.phase && musicQuizState.value.phase !== 'idle')
+const isAnyGameActive    = computed(() => isAnimeQuizActive.value || isMusicQuizActive.value)
+
+// ─── Controls ─────────────────────────────────────────────────────────────────
 const PUSH_TO_TALK_KEY = 'zvonok_push_to_talk_v1'
 const chatOpen    = ref(false)
 const musicOpen   = ref(false)
-const musicVolume = ref(parseFloat(localStorage.getItem('zvonok_music_vol') ?? '1'))
+const musicVolume      = ref(parseFloat(localStorage.getItem('zvonok_music_vol')      ?? '1'))
+const musicQuizVolume  = ref(parseFloat(localStorage.getItem('zvonok_quiz_music_vol') ?? '1'))
 const musicAudioEl = ref(null)
 const pushToTalkEnabled = ref(localStorage.getItem(PUSH_TO_TALK_KEY) === '1')
 const pushToTalkActive = ref(false)
@@ -225,6 +390,10 @@ let pushToTalkWasMuted = false
 watch(musicVolume, (v) => {
   localStorage.setItem('zvonok_music_vol', String(v))
   if (musicAudioEl.value) musicAudioEl.value.volume = v * 0.25
+})
+
+watch(musicQuizVolume, (v) => {
+  localStorage.setItem('zvonok_quiz_music_vol', String(v))
 })
 
 watch(pushToTalkEnabled, (enabled) => {
@@ -314,6 +483,7 @@ function updateRealVh() {
 }
 
 let overflowObserver = null
+
 onMounted(() => {
   updateRealVh()
   window.addEventListener('resize', updateRealVh)
@@ -354,6 +524,8 @@ const allSharers = computed(() => {
     name: (myInfo.value?.name ?? 'Я') + ' (вы)',
     avatar: myInfo.value?.avatar ?? '',
     screenStream: screenStream.value,
+    hasScreenAudio: screenStream.value?.getAudioTracks().some((t) => t.readyState === 'live'),
+    volume: 1,
   }
   return [localEntry, ...remote]
 })
@@ -379,15 +551,51 @@ const musicBotParticipant = computed(() => {
     speaking: true,
     muted: false,
     status: musicState.value.current?.title ?? null,
-    volume: musicVolume.value,  // keep in sync with actual audio volume
+    volume: musicVolume.value,
     isBot: true,
   }
 })
 
-// Unified volume handler: routes bot → musicVolume, others → WebRTC audio
+// Virtual "Аниме Квиз Бот" participant — appears when quiz is active
+const quizBotParticipant = computed(() => {
+  const phase = quizState.value?.phase
+  if (!phase || phase === 'idle') return null
+  const statusMap = { lobby: 'Ожидание игроков…', playing: 'Идёт игра!', results: 'Результаты' }
+  return {
+    id: '__quiz_bot__',
+    name: 'Аниме Квиз Бот',
+    avatar: '',
+    speaking: phase === 'playing',
+    muted: false,
+    status: statusMap[phase] ?? null,
+    volume: 1.0,
+    isBot: true,
+  }
+})
+
+// Virtual "Музыкальный Квиз Бот" participant — appears when music quiz is active
+const musicQuizBotParticipant = computed(() => {
+  const phase = musicQuizState.value?.phase
+  if (!phase || phase === 'idle') return null
+  const statusMap = { lobby: 'Ожидание игроков…', playing: 'Идёт игра!', results: 'Результаты' }
+  return {
+    id: '__music_quiz_bot__',
+    name: 'Музыкальный Квиз Бот',
+    avatar: '',
+    speaking: phase === 'playing',
+    muted: false,
+    status: statusMap[phase] ?? null,
+    volume: musicQuizVolume.value,
+    isBot: true,
+  }
+})
+
+// Unified volume handler: routes bots → appropriate sink, others → WebRTC audio
 function handleVolumeChange(id, value) {
   if (id === '__music_bot__') {
     musicVolume.value = value
+  } else if (id === '__music_quiz_bot__') {
+    musicQuizVolume.value = value
   } else {
     setParticipantVolume(id, value)
   }
@@ -395,6 +603,80 @@ function handleVolumeChange(id, value) {
 
 function handleToggleMusic() {
   musicOpen.value = !musicOpen.value
+}
+
+function handleToggleEntertainment() {
+  entertainmentOpen.value = !entertainmentOpen.value
+}
+
+async function handleStartQuiz(settings = {}) {
+  entertainmentOpen.value = false
+  try {
+    await quizOpenLobby(
+      { id: myId.value, name: myInfo.value?.name ?? 'Участник', avatar: myInfo.value?.avatar ?? '' },
+      settings,
+    )
+  } catch (e) {
+    console.error('[App] handleStartQuiz:', e)
+  }
+}
+
+function handleOpenQuiz() {
+  entertainmentOpen.value = false
+}
+
+async function handleQuizJoin() {
+  await quizJoinLobby({ id: myId.value, name: myInfo.value?.name ?? 'Участник', avatar: myInfo.value?.avatar ?? '' })
+}
+
+async function handleQuizStop() {
+  stageView.value = 'auto'
+  await quizStopGame()
+}
+
+async function handleQuizStart() {
+  await quizStartGame()
+}
+
+async function handleQuizAgain() {
+  await quizPlayAgain()
+}
+
+function handleQuizAnswerCorrect({ name }) {
+  sendChatMessage(`🎌 ${name} угадал аниме!`)
+}
+
+async function handleQuizRetry() {
+  await quizRetryLoad({ id: myId.value, name: myInfo.value?.name ?? 'Участник', avatar: myInfo.value?.avatar ?? '' })
+}
+
+// ─── Music quiz handlers ──────────────────────────────────────────────────────
+async function handleStartMusicQuiz(settings = {}) {
+  entertainmentOpen.value = false
+  try {
+    await musicQuizOpenLobby(
+      { id: myId.value, name: myInfo.value?.name ?? 'Участник', avatar: myInfo.value?.avatar ?? '' },
+      settings,
+    )
+  } catch (e) {
+    console.error('[App] handleStartMusicQuiz:', e)
+  }
+}
+
+function handleOpenMusicQuiz() {
+  entertainmentOpen.value = false
+}
+
+async function handleMusicQuizJoin() {
+  await musicQuizJoinLobby({ id: myId.value, name: myInfo.value?.name ?? 'Участник', avatar: myInfo.value?.avatar ?? '' })
+}
+
+async function handleMusicQuizStop() { stageView.value = 'auto'; await musicQuizStopGame() }
+async function handleMusicQuizStart() { await musicQuizStartGame() }
+async function handleMusicQuizAgain() { await musicQuizPlayAgain() }
+
+function handleMusicQuizAnswerCorrect({ name }) {
+  sendChatMessage(`🎵 ${name} угадал аниме!`)
 }
 
 async function handleJoin({ name, avatar }) {
@@ -622,7 +904,12 @@ body {
   align-items: stretch;
   justify-content: center;
   padding: 6px;
+  position: relative;
+  flex-direction: column;
+  gap: 0;
 }
+/* Push content below the tab bar when it's visible */
+.stage-area.has-tabs { padding-top: 40px; }
 
 /* ─── Resize handle ──────────────────────────────────────────────────────── */
 .resize-handle {
@@ -654,6 +941,50 @@ body {
   display: flex; align-items: center; justify-content: center;
   width: 100%; height: 100%;
 }
+
+/* Split screen layout */
+.stage-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  gap: 4px;
+}
+.split-pane {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+/* View-mode tab bar */
+.view-tabs {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 2px;
+  background: rgba(8,8,18,0.88);
+  border: 1px solid rgba(157,78,221,0.3);
+  border-radius: 8px;
+  padding: 3px;
+  backdrop-filter: blur(8px);
+}
+.view-tabs button {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #7070a0;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.view-tabs button:hover { background: rgba(157,78,221,0.12); color: #c8c8e8; }
+.view-tabs button.active { background: rgba(157,78,221,0.2); color: #c580ff; }
 
 /* ─── Participants strip (bottom) ────────────────────────────────────────── */
 .participants-strip {
