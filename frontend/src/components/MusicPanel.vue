@@ -27,7 +27,7 @@
                 ref="searchInputEl"
                 v-model="query"
                 class="search-input"
-                placeholder="Название или ссылка на YouTube…"
+                placeholder="Поиск, видео или плейлист YouTube…"
                 @keydown.enter="handleSearch"
                 @input="onQueryInput"
               />
@@ -50,6 +50,19 @@
                 </svg>
               </button>
             </div>
+
+            <div v-if="playlistHintVisible" class="playlist-hint">
+              <span class="playlist-hint-text">Обнаружен плейлист — можно добавить все ролики в очередь.</span>
+              <button
+                class="playlist-add-all"
+                type="button"
+                :disabled="playlistAdding"
+                @click="addPlaylistFromURL(query.trim())"
+              >
+                {{ playlistAdding ? 'Загрузка…' : 'Весь плейлист в очередь' }}
+              </button>
+            </div>
+            <p v-if="playlistToast" class="playlist-toast">{{ playlistToast }}</p>
 
             <!-- Search results -->
             <Transition name="results">
@@ -209,7 +222,10 @@ watch(
   { immediate: true },
 )
 
-onUnmounted(() => { if (posTimer) clearInterval(posTimer) })
+onUnmounted(() => {
+  if (posTimer) clearInterval(posTimer)
+  if (playlistToastTimer) clearTimeout(playlistToastTimer)
+})
 
 const progressPct = computed(() => {
   const dur = props.state?.current?.duration
@@ -221,6 +237,9 @@ const query        = ref('')
 const searchResults = ref([])
 const searching    = ref(false)
 const searchInputEl = ref(null)
+const playlistAdding = ref(false)
+const playlistToast = ref('')
+let playlistToastTimer = null
 
 // ─── Focus search on open ──────────────────────────────────────────────────
 watch(() => props.open, (v) => {
@@ -230,6 +249,13 @@ watch(() => props.open, (v) => {
 
 // ─── Detect YouTube URL vs search query ───────────────────────────────────
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//
+/** Ссылка с параметром list= — плейлист или «очередь» YouTube. */
+const YT_PLAYLIST_RE = /[?&]list=[^&#\s]+/i
+
+const playlistHintVisible = computed(() => {
+  const q = query.value.trim()
+  return YT_RE.test(q) && YT_PLAYLIST_RE.test(q)
+})
 
 let debounceTimer = null
 function onQueryInput() {
@@ -246,12 +272,46 @@ function onQueryInput() {
   debounceTimer = setTimeout(handleSearch, 700)
 }
 
+function showPlaylistToast(text) {
+  playlistToast.value = text
+  if (playlistToastTimer) clearTimeout(playlistToastTimer)
+  playlistToastTimer = setTimeout(() => { playlistToast.value = '' }, 4500)
+}
+
+async function addPlaylistFromURL(url) {
+  playlistAdding.value = true
+  try {
+    const res = await fetch('/api/music/add-playlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    if (!res.ok) throw new Error(String(res.status))
+    const data = await res.json()
+    const n = data.added ?? 0
+    const cap = data.capped ? ' (достигнут лимит очереди на сервере)' : ''
+    showPlaylistToast(`В очередь добавлено треков: ${n}${cap}`)
+    query.value = ''
+  } catch (e) {
+    console.error('[music] add-playlist:', e)
+    showPlaylistToast('Не удалось загрузить плейлист')
+  } finally {
+    playlistAdding.value = false
+  }
+}
+
 async function handleSearch() {
   clearTimeout(debounceTimer)
   const q = query.value.trim()
   if (!q) return
 
-  // Direct YouTube URL → add immediately
+  // YouTube с плейлистом → все видео из list=
+  if (YT_RE.test(q) && YT_PLAYLIST_RE.test(q)) {
+    await addPlaylistFromURL(q)
+    return
+  }
+
+  // Одно видео по прямой ссылке
   if (YT_RE.test(q)) {
     await addByURL(q, '')
     query.value = ''
@@ -452,6 +512,50 @@ function fmtDuration(sec) {
 }
 .search-clear { background: transparent; color: #50507a; }
 .search-clear:hover { color: #c8c8e8; }
+
+.playlist-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(0, 245, 255, 0.06);
+  border: 1px solid rgba(0, 245, 255, 0.25);
+  border-radius: 8px;
+}
+.playlist-hint-text {
+  font-size: 12px;
+  color: #a8c8d8;
+  line-height: 1.35;
+  flex: 1;
+  min-width: 140px;
+}
+.playlist-add-all {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid #00f5ff;
+  background: rgba(0, 245, 255, 0.12);
+  color: #00f5ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.playlist-add-all:hover:not(:disabled) {
+  background: rgba(0, 245, 255, 0.22);
+}
+.playlist-add-all:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.playlist-toast {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #39ff14;
+}
+
 .search-btn { background: rgba(157,78,221,0.2); color: #9d4edd; }
 .search-btn:hover:not(:disabled) { background: rgba(157,78,221,0.35); color: #c8a0f0; }
 .search-btn:disabled { opacity: .4; cursor: default; }

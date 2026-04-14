@@ -74,6 +74,7 @@
                   :sharers="allSharers"
                   :active-id="activeScreenSharer"
                   :local-id="myId"
+                  :deafened="isDeafened"
                   @select="activeScreenSharer = $event"
                   @volume-change="handleVolumeChange"
                 />
@@ -87,6 +88,7 @@
               :sharers="allSharers"
               :active-id="activeScreenSharer"
               :local-id="myId"
+              :deafened="isDeafened"
               @select="activeScreenSharer = $event"
               @volume-change="handleVolumeChange"
             />
@@ -129,6 +131,7 @@
               :sharers="allSharers"
               :active-id="activeScreenSharer"
               :local-id="myId"
+              :deafened="isDeafened"
               @select="activeScreenSharer = $event"
               @volume-change="handleVolumeChange"
             />
@@ -158,12 +161,14 @@
               :is-local="true"
               :speaking="localSpeaking"
               :is-muted="isMuted"
+              :mic-idle-long="participantMicIdleLong(localParticipant)"
             />
             <ParticipantCard
               v-for="p in participantsList"
               :key="p.id"
               :participant="p"
               :speaking="p.speaking"
+              :mic-idle-long="participantMicIdleLong(p)"
               @volume-change="handleVolumeChange"
             />
             <!-- Music bot participant (virtual) -->
@@ -232,12 +237,14 @@
                     :is-local="true"
                     :speaking="localSpeaking"
                     :is-muted="isMuted"
+                    :mic-idle-long="participantMicIdleLong(localParticipant)"
                   />
                   <ParticipantCard
                     v-for="p in participantsList"
                     :key="p.id"
                     :participant="p"
                     :speaking="p.speaking"
+                    :mic-idle-long="participantMicIdleLong(p)"
                     @volume-change="handleVolumeChange"
                   />
                   <ParticipantCard
@@ -266,6 +273,7 @@
 
       <ControlBar
         :is-muted="isMuted"
+        :is-deafened="isDeafened"
         :is-screen-sharing="isScreenSharing"
         :status="myStatus"
         :chat-open="chatOpen"
@@ -277,6 +285,7 @@
         :push-to-talk-enabled="pushToTalkEnabled"
         :push-to-talk-active="pushToTalkActive"
         @toggle-mute="toggleMute"
+        @toggle-deafen="toggleDeafen"
         @toggle-push-to-talk="handleTogglePushToTalk"
         @toggle-screen-share="handleScreenShare"
         @set-status="handleSetStatus"
@@ -351,11 +360,11 @@ const {
   myId, myInfo, myStatus,
   participantsList, screenSharersList,
   localStream, screenStream,
-  isMuted, isScreenSharing, localSpeaking, activeScreenSharer,
+  isMuted, isDeafened, isScreenSharing, localSpeaking, localLastVoiceAt, activeScreenSharer,
   connected, error, hasJoined,
   chatMessages, chatUnread,
   screenShareSettings, musicState,
-  join, leave, toggleMute, setMuted,
+  join, leave, toggleMute, setMuted, toggleDeafen,
   setStatus, sendChatMessage, clearChatUnread, setChatOpen,
   startScreenShare, stopScreenShare, setParticipantVolume,
   quizState, musicQuizState,
@@ -401,11 +410,16 @@ watch(pushToTalkEnabled, (enabled) => {
   if (!enabled) stopPushToTalk()
 })
 
+watch(isDeafened, (d) => {
+  if (musicAudioEl.value) musicAudioEl.value.muted = d
+}, { immediate: true })
+
 // Apply volume when the audio element mounts
 function onMusicAudioMounted(el) {
   if (el) {
     musicAudioEl.value = el
     el.volume = musicVolume.value * 0.25
+    el.muted = isDeafened.value
   }
 }
 
@@ -421,6 +435,7 @@ function _reconnectMusicStream() {
     const vol = el.volume
     el.src = '/api/music/stream?t=' + Date.now()
     el.volume = vol
+    el.muted = isDeafened.value
     el.play().catch(() => {})
   }, 1500)
 }
@@ -492,6 +507,8 @@ onMounted(() => {
   window.addEventListener('blur', stopPushToTalk)
   document.addEventListener('visibilitychange', onVisibilityChange)
 
+  afkInterval = setInterval(() => { afkTick.value++ }, 20000)
+
   nextTick(() => {
     if (stripEl.value) {
       overflowObserver = new ResizeObserver(checkOverflow)
@@ -504,6 +521,10 @@ onMounted(() => {
 watch(() => participantsList.value.length, () => nextTick(checkOverflow))
 
 onBeforeUnmount(() => {
+  if (afkInterval) {
+    clearInterval(afkInterval)
+    afkInterval = null
+  }
   stopPushToTalk()
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeUp)
@@ -536,10 +557,25 @@ const localParticipant = computed(() => ({
   avatar: myInfo.value?.avatar ?? '',
   speaking: localSpeaking.value,
   muted: isMuted.value,
+  lastVoiceActivityAt: localLastVoiceAt.value,
   status: myStatus.value,
   volume: 1.0,
   hasScreenShare: isScreenSharing.value,
 }))
+
+const MIC_IDLE_MS = 5 * 60 * 1000
+const afkTick = ref(0)
+let afkInterval = null
+
+function participantMicIdleLong(p) {
+  void afkTick.value
+  if (!p?.id || String(p.id).startsWith('__')) return false
+  if (p.muted) return false
+  if (p.id === myId.value && !localStream.value) return false
+  const t = p.lastVoiceActivityAt
+  if (t == null || typeof t !== 'number') return false
+  return Date.now() - t > MIC_IDLE_MS
+}
 
 // Virtual "Музыкант Бот" participant — appears when music is playing
 const musicBotParticipant = computed(() => {
@@ -739,6 +775,7 @@ function shouldStartPushToTalk(e) {
     hasJoined.value &&
     !!localStream.value &&
     !pushToTalkActive.value &&
+    !isDeafened.value &&
     !isTypingContext(e.target)
   )
 }
@@ -787,7 +824,7 @@ function onVisibilityChange() {
   --text-dim:    #7070a0;
   --text-bright: #e8e8ff;
   --header-h:    56px;
-  --bar-h:       72px;
+  --bar-h:       84px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -843,7 +880,7 @@ body {
 
 .logo {
   font-family: 'Orbitron', sans-serif;
-  font-size: 22px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase;
+  font-size: 22px; font-weight: 900; letter-spacing: 0.04em;
   color: var(--text-bright);
   text-shadow: 0 0 20px rgba(157,78,221,0.5);
 }

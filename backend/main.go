@@ -66,6 +66,7 @@ func main() {
 	http.HandleFunc("/api/music/state", music.ServeState)
 	http.HandleFunc("/api/music/search", music.ServeSearch)
 	http.HandleFunc("/api/music/add", music.ServeAdd)
+	http.HandleFunc("/api/music/add-playlist", music.ServeAddPlaylist)
 	http.HandleFunc("/api/music/remove", music.ServeRemove)
 	http.HandleFunc("/api/music/skip", music.ServeSkip)
 	http.HandleFunc("/api/music/clear", music.ServeClear)

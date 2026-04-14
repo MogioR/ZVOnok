@@ -84,7 +84,7 @@
         class="screen-video"
         autoplay
         playsinline
-        :muted="isLocalActive || hasScreenAudio"
+        :muted="isLocalActive || hasScreenAudio || deafened"
       />
       <div v-if="!activeStream" class="no-stream">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.3">
@@ -106,7 +106,7 @@
           class="split-video"
           autoplay
           playsinline
-          :muted="s.id === localId || s.hasScreenAudio"
+          :muted="s.id === localId || s.hasScreenAudio || deafened"
         />
         <!-- Overlay: name always visible at bottom, volume on hover -->
         <div class="cell-footer">
@@ -145,6 +145,8 @@ const props = defineProps({
   sharers:  { type: Array,  required: true },
   activeId: { type: String, default: null },
   localId:  { type: String, default: null },
+  /** Глухой режим: заглушить звук в плеере стрима (в дополнение к отдельным аудио-трекам). */
+  deafened: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['select', 'volume-change'])

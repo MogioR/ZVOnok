@@ -134,6 +134,22 @@ func (m *MusicManager) Enqueue(t Track) {
 	}
 }
 
+// EnqueueMany appends several tracks and starts playback if idle (single broadcast).
+func (m *MusicManager) EnqueueMany(tracks []Track) int {
+	if len(tracks) == 0 {
+		return 0
+	}
+	m.mu.Lock()
+	m.queue = append(m.queue, tracks...)
+	shouldStart := !m.playing
+	m.mu.Unlock()
+	m.broadcast()
+	if shouldStart {
+		go m.playLoop()
+	}
+	return len(tracks)
+}
+
 func (m *MusicManager) Remove(idx int) {
 	m.mu.Lock()
 	if idx >= 0 && idx < len(m.queue) {
@@ -349,6 +365,64 @@ func ytdlpArgs(extra ...string) []string {
 		"--no-playlist",
 	}
 	return append(base, extra...)
+}
+
+const maxPlaylistEntries = 200
+
+// ytdlpPlaylistDumpArgs runs yt-dlp in flat-playlist mode (one JSON line per entry).
+func ytdlpPlaylistDumpArgs(playlistURL string) []string {
+	return []string{
+		"--js-runtimes", "node:/usr/bin/node",
+		"--remote-components", "ejs:github",
+		"--flat-playlist",
+		"--dump-json",
+		"--quiet",
+		playlistURL,
+	}
+}
+
+// resolvePlaylistEntries lists videos in a playlist / mix URL (no per-item network resolve).
+func resolvePlaylistEntries(ctx context.Context, playlistURL string) ([]Track, error) {
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	args := ytdlpPlaylistDumpArgs(playlistURL)
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	out, combinedErr := cmd.Output()
+	if combinedErr != nil {
+		if ee, ok := combinedErr.(*exec.ExitError); ok {
+			log.Printf("[music] yt-dlp playlist stderr: %s", string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("yt-dlp playlist: %w", combinedErr)
+	}
+
+	var tracks []Track
+	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	sc.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
+	for sc.Scan() {
+		if len(tracks) >= maxPlaylistEntries {
+			break
+		}
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		t := parseTrackJSON(line, playlistURL)
+		if t.URL == "" {
+			continue
+		}
+		if t.Title == "" {
+			t.Title = t.URL
+		}
+		tracks = append(tracks, *t)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if len(tracks) == 0 {
+		return nil, fmt.Errorf("no entries in playlist")
+	}
+	return tracks, nil
 }
 
 // resolveTrack fetches full track info for a URL.
@@ -635,6 +709,35 @@ func (m *MusicManager) ServeAdd(w http.ResponseWriter, r *http.Request) {
 	m.Enqueue(track)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(track)
+}
+
+// POST /api/music/add-playlist  body: { "url": "https://www.youtube.com/playlist?list=..." }
+func (m *MusicManager) ServeAddPlaylist(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.URL) == "" {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	tracks, err := resolvePlaylistEntries(r.Context(), strings.TrimSpace(body.URL))
+	if err != nil {
+		log.Printf("[music] add-playlist error: %v", err)
+		http.Error(w, "could not read playlist", http.StatusBadRequest)
+		return
+	}
+
+	n := m.EnqueueMany(tracks)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"added": n,
+		"capped": len(tracks) >= maxPlaylistEntries,
+	})
 }
 
 // POST /api/music/remove  body: { index }

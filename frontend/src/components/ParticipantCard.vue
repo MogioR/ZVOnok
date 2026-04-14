@@ -53,6 +53,15 @@
           </svg>
         </div>
 
+        <!-- Долгая тишина по микрофону (VAD / сигнал «говорю») -->
+        <div
+          v-if="micIdleLong"
+          class="afk-badge"
+          title="Нет сигнала голоса по микрофону более 5 минут"
+        >
+          💤
+        </div>
+
         <!-- Screen share badge -->
         <div v-if="participant.hasScreenShare" class="share-badge" title="Транслирует экран">
           <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
@@ -111,6 +120,8 @@ const props = defineProps({
   isLocal:     { type: Boolean, default: false },
   speaking:    { type: Boolean, default: false },
   isMuted:     { type: Boolean, default: false },
+  /** Нет активности голоса по микрофону дольше порога (см. родитель). */
+  micIdleLong: { type: Boolean, default: false },
 })
 
 defineEmits(['volume-change'])
@@ -275,6 +286,24 @@ const initials = computed(() =>
 
 .mic-badge  { right: -1px; }
 .share-badge { left: -1px; }
+
+.afk-badge {
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  z-index: 5;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  background: linear-gradient(145deg, #3a3a62, #222238);
+  border: 1.5px solid #080812;
+  box-shadow: 0 0 8px rgba(120, 140, 220, 0.35);
+}
 
 .mic-badge.active {
   background: #39ff14; color: #080812;

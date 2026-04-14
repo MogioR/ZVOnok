@@ -65,8 +65,14 @@ export function useConference() {
   const localStream = shallowRef(null)
   const screenStream = shallowRef(null)
   const isMuted = shallowRef(false)
+  /** «Глухой режим»: выкл. микрофон + заглушить звук участников (и стрим). */
+  const isDeafened = shallowRef(false)
+  /** Сохранённое состояние микрофона до включения глухого режима. */
+  const micMutedBeforeDeafen = shallowRef(false)
   const isScreenSharing = shallowRef(false)
   const localSpeaking = shallowRef(false)
+  /** Последний момент, когда локальный VAD видел речь (для индикатора «тишина»). */
+  const localLastVoiceAt = shallowRef(Date.now())
   const activeScreenSharer = shallowRef(null)
   const connected = shallowRef(false)
   const error = shallowRef(null)
@@ -290,7 +296,11 @@ export function useConference() {
 
       case 'speaking': {
         const p = participants.get(msg.from)
-        if (p) p.speaking = msg.payload.speaking
+        if (p) {
+          p.speaking = msg.payload.speaking
+          // Любое изменение VAD — активность по микрофону (начало или конец фразы).
+          p.lastVoiceActivityAt = Date.now()
+        }
         break
       }
 
@@ -373,6 +383,7 @@ export function useConference() {
         avatar: info.avatar,
         speaking: false,
         muted: false,
+        lastVoiceActivityAt: Date.now(),
         status: null,
         hasScreenShare: false,
         hasScreenAudio: false,
@@ -593,6 +604,7 @@ export function useConference() {
       document.addEventListener('click', unlock, { once: true })
       document.addEventListener('keydown', unlock, { once: true })
     })
+    audio.muted = isDeafened.value
     p.audioEl = markRaw(audio)
   }
 
@@ -618,6 +630,7 @@ export function useConference() {
     if (p.screenAudioEl) {
       p.screenAudioEl.srcObject = stream
       p.screenAudioEl.volume = p.volume ?? 1
+      p.screenAudioEl.muted = isDeafened.value
       p.screenAudioEl.play().catch(() => {})
       return
     }
@@ -625,6 +638,7 @@ export function useConference() {
     const audio = new Audio()
     audio.srcObject = stream
     audio.volume = p.volume ?? 1
+    audio.muted = isDeafened.value
     audio.autoplay = true
     audio.play().catch(() => {
       const unlock = () => audio.play().catch(() => {})
@@ -682,6 +696,7 @@ export function useConference() {
           prevSpeaking = speaking
           localSpeaking.value = speaking
           sendSignal('speaking', null, { speaking })
+          localLastVoiceAt.value = Date.now()
         }
       }, 150)
     } catch (e) { console.warn('VAD setup error:', e) }
@@ -706,6 +721,7 @@ export function useConference() {
         video: false,
       })
       startVAD(localStream.value)
+      localLastVoiceAt.value = Date.now()
     } catch (e) {
       console.warn('Microphone denied:', e)
       error.value = 'Нет доступа к микрофону. Вы можете слушать, но не говорить.'
@@ -714,6 +730,7 @@ export function useConference() {
   }
 
   function setMuted(nextMuted) {
+    if (isDeafened.value && nextMuted === false) return
     if (isMuted.value === nextMuted) return
     isMuted.value = nextMuted
     if (localStream.value) {
@@ -724,7 +741,34 @@ export function useConference() {
   }
 
   function toggleMute() {
+    if (isDeafened.value) return
     setMuted(!isMuted.value)
+  }
+
+  function syncRemoteOutputMute() {
+    const m = isDeafened.value
+    participants.forEach((p) => {
+      if (p.audioEl) p.audioEl.muted = m
+      if (p.screenAudioEl) p.screenAudioEl.muted = m
+    })
+  }
+
+  function setDeafened(on) {
+    if (on === isDeafened.value) return
+    if (on) {
+      micMutedBeforeDeafen.value = isMuted.value
+      isDeafened.value = true
+      setMuted(true)
+      syncRemoteOutputMute()
+    } else {
+      isDeafened.value = false
+      syncRemoteOutputMute()
+      setMuted(micMutedBeforeDeafen.value)
+    }
+  }
+
+  function toggleDeafen() {
+    setDeafened(!isDeafened.value)
   }
 
   function setStatus(status) {
@@ -872,7 +916,10 @@ export function useConference() {
     participants.clear()
     if (ws) { ws.close(); ws = null }
     myId.value = null; myInfo.value = null; hasJoined.value = false; connected.value = false
-    isMuted.value = false; isScreenSharing.value = false; activeScreenSharer.value = null
+    isMuted.value = false
+    isDeafened.value = false
+    isScreenSharing.value = false
+    activeScreenSharer.value = null
     error.value = null; myStatus.value = null; chatUnread.value = 0
     // Don't clear chatMessages on leave — keep history in localStorage
   }
@@ -881,12 +928,12 @@ export function useConference() {
     myId, myInfo, myStatus,
     participants, participantsList, screenSharersList,
     localStream, screenStream,
-    isMuted, isScreenSharing, localSpeaking, activeScreenSharer,
+    isMuted, isDeafened, isScreenSharing, localSpeaking, localLastVoiceAt, activeScreenSharer,
     connected, error, hasJoined,
     chatMessages, chatUnread,
     screenShareSettings,
     musicState,
-    join, leave, toggleMute, setMuted,
+    join, leave, toggleMute, setMuted, toggleDeafen,
     setStatus, sendChatMessage, clearChatUnread, setChatOpen,
     startScreenShare, stopScreenShare, setParticipantVolume,
     sendGameEvent, onGameEvent,
