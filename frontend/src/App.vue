@@ -3,7 +3,20 @@
     <div class="bg-grid" />
     <div class="bg-glow" />
 
-    <JoinModal v-if="!hasJoined" :error="error" @join="handleJoin" />
+    <!-- ── Landing: choose / create room ──────────────────────────────────── -->
+    <LandingModal
+      v-if="!hasJoined && !selectedRoom"
+      @select-room="handleRoomSelected"
+    />
+
+    <!-- ── JoinModal: check audio/video, enter name + optional password ───── -->
+    <JoinModal
+      v-else-if="!hasJoined && selectedRoom"
+      :error="error"
+      :room-id="selectedRoom.roomId"
+      :needs-password="selectedRoom.needsPassword"
+      @join="handleJoin"
+    />
 
     <template v-else>
       <header class="room-header">
@@ -12,6 +25,17 @@
         </div>
 
         <div class="room-info">
+          <div
+            v-if="currentRoomId !== 'default'"
+            class="room-id-badge"
+            :title="'ID комнаты: ' + currentRoomId"
+            @click="copyRoomLink"
+          >
+            🔑 {{ currentRoomId }}
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="opacity:.5">
+              <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+            </svg>
+          </div>
           <div class="status-badge" :class="connected ? 'online' : 'offline'">
             <span class="status-dot" />
             {{ connected ? 'ОНЛАЙН' : 'ПЕРЕПОДКЛЮЧЕНИЕ…' }}
@@ -27,18 +51,18 @@
         <div v-if="error" class="error-banner">{{ error }}</div>
       </header>
 
-      <!-- Main content: screen share fills space, participants strip at bottom -->
+      <!-- Main content -->
       <main class="room-main" :class="{ 'chat-open': chatOpen }">
         <div class="stage-area" :class="{ 'has-tabs': isAnyGameActive && allSharers.length > 0 }" :style="stageStyle">
 
-          <!-- ── View-mode tabs (shown when game + stream both active) ─────── -->
+          <!-- View-mode tabs -->
           <div v-if="isAnyGameActive && allSharers.length > 0" class="view-tabs">
             <button :class="{ active: stageView === 'auto' }" @click="stageView = 'auto'">🎌 Игра</button>
             <button :class="{ active: stageView === 'stream' }" @click="stageView = 'stream'">📺 Стрим</button>
             <button :class="{ active: stageView === 'split' }" @click="stageView = 'split'">⊞ Оба</button>
           </div>
 
-          <!-- ── Split layout ──────────────────────────────────────────────── -->
+          <!-- Split layout -->
           <template v-if="isAnyGameActive && allSharers.length > 0 && stageView === 'split'">
             <div class="stage-split">
               <div class="split-pane">
@@ -75,26 +99,32 @@
                   :active-id="activeScreenSharer"
                   :local-id="myId"
                   :deafened="isDeafened"
+                  :webcam-stream="isWebcamActive ? webcamStream : null"
+                  :is-webcam-active="isWebcamActive"
                   @select="activeScreenSharer = $event"
-                  @volume-change="handleVolumeChange"
+                  @screen-volume-change="handleScreenVolumeChange"
+                  @toggle-webcam="handleToggleWebcam"
                 />
               </div>
             </div>
           </template>
 
-          <!-- ── Stream-only layout (when user picked 'stream') ────────────── -->
+          <!-- Stream-only layout -->
           <template v-else-if="isAnyGameActive && allSharers.length > 0 && stageView === 'stream'">
             <ScreenShareView
               :sharers="allSharers"
               :active-id="activeScreenSharer"
               :local-id="myId"
               :deafened="isDeafened"
+              :webcam-stream="isWebcamActive ? webcamStream : null"
+              :is-webcam-active="isWebcamActive"
               @select="activeScreenSharer = $event"
-              @volume-change="handleVolumeChange"
+              @screen-volume-change="handleScreenVolumeChange"
+              @toggle-webcam="handleToggleWebcam"
             />
           </template>
 
-          <!-- ── Game view (default when game active, or stageView==='auto') ─ -->
+          <!-- Game view -->
           <template v-else-if="isAnimeQuizActive">
             <AnimeQuizView
               :quiz-state="quizState"
@@ -124,7 +154,7 @@
             />
           </template>
 
-          <!-- ── No game: show stream or placeholder ────────────────────────── -->
+          <!-- No game: stream or placeholder -->
           <template v-else>
             <ScreenShareView
               v-if="allSharers.length > 0"
@@ -132,8 +162,11 @@
               :active-id="activeScreenSharer"
               :local-id="myId"
               :deafened="isDeafened"
+              :webcam-stream="isWebcamActive ? webcamStream : null"
+              :is-webcam-active="isWebcamActive"
               @select="activeScreenSharer = $event"
-              @volume-change="handleVolumeChange"
+              @screen-volume-change="handleScreenVolumeChange"
+              @toggle-webcam="handleToggleWebcam"
             />
             <div v-else class="stage-placeholder">
               <div class="placeholder-icon">
@@ -161,6 +194,7 @@
               :is-local="true"
               :speaking="localSpeaking"
               :is-muted="isMuted"
+              :is-deafened="isDeafened"
               :mic-idle-long="participantMicIdleLong(localParticipant)"
             />
             <ParticipantCard
@@ -193,7 +227,6 @@
             />
           </div>
 
-          <!-- Expand button — shown when participants overflow one row -->
           <Transition name="expand-fade">
             <button
               v-if="hasOverflow"
@@ -237,6 +270,7 @@
                     :is-local="true"
                     :speaking="localSpeaking"
                     :is-muted="isMuted"
+                    :is-deafened="isDeafened"
                     :mic-idle-long="participantMicIdleLong(localParticipant)"
                   />
                   <ParticipantCard
@@ -275,6 +309,7 @@
         :is-muted="isMuted"
         :is-deafened="isDeafened"
         :is-screen-sharing="isScreenSharing"
+        :is-webcam-active="isWebcamActive"
         :status="myStatus"
         :chat-open="chatOpen"
         :unread="chatUnread"
@@ -284,14 +319,19 @@
         :entertainment-active="isAnyGameActive"
         :push-to-talk-enabled="pushToTalkEnabled"
         :push-to-talk-active="pushToTalkActive"
+        :audio-input-device-id="audioInputDeviceId"
+        :audio-output-device-id="audioOutputDeviceId"
         @toggle-mute="toggleMute"
         @toggle-deafen="toggleDeafen"
         @toggle-push-to-talk="handleTogglePushToTalk"
         @toggle-screen-share="handleScreenShare"
+        @toggle-webcam="handleToggleWebcam"
         @set-status="handleSetStatus"
         @toggle-chat="handleToggleChat"
         @toggle-music="handleToggleMusic"
         @toggle-entertainment="handleToggleEntertainment"
+        @set-audio-input="setAudioInputDevice"
+        @set-audio-output="setAudioOutputDevice"
         @leave="handleLeave"
       />
 
@@ -305,6 +345,7 @@
       <MusicPanel
         :open="musicOpen"
         :state="musicState"
+        :room-id="currentRoomId"
         @close="musicOpen = false"
       />
 
@@ -313,6 +354,7 @@
         :quiz-phase="quizState?.phase ?? 'idle'"
         :music-quiz-phase="musicQuizState?.phase ?? 'idle'"
         :music-quiz-state="musicQuizState"
+        :room-id="currentRoomId"
         @close="entertainmentOpen = false"
         @start-quiz="handleStartQuiz"
         @open-quiz="handleOpenQuiz"
@@ -324,12 +366,17 @@
       <audio
         v-if="musicState.playing"
         :ref="onMusicAudioMounted"
-        src="/api/music/stream"
+        :src="`/api/music/stream?room=${currentRoomId}`"
         autoplay
         style="display:none"
         @error="onMusicStreamError"
         @stalled="onMusicStreamStalled"
       />
+
+      <!-- Link copied toast -->
+      <Transition name="toast">
+        <div v-if="linkCopied" class="link-toast">Ссылка скопирована!</div>
+      </Transition>
     </template>
   </div>
 </template>
@@ -338,14 +385,17 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useConference } from './composables/useConference.js'
 import {
-  useAnimeQuiz, openLobby as quizOpenLobby, joinLobby as quizJoinLobby,
+  useAnimeQuiz, setQuizRoom,
+  openLobby as quizOpenLobby, joinLobby as quizJoinLobby,
   startGame as quizStartGame, stopGame as quizStopGame, playAgain as quizPlayAgain,
   retryLoad as quizRetryLoad,
 } from './composables/useAnimeQuiz.js'
 import {
-  useMusicQuiz, openLobby as musicQuizOpenLobby, joinLobby as musicQuizJoinLobby,
+  useMusicQuiz, setMusicQuizRoom,
+  openLobby as musicQuizOpenLobby, joinLobby as musicQuizJoinLobby,
   startGame as musicQuizStartGame, stopGame as musicQuizStopGame, playAgain as musicQuizPlayAgain,
 } from './composables/useMusicQuiz.js'
+import LandingModal from './components/LandingModal.vue'
 import JoinModal from './components/JoinModal.vue'
 import ParticipantCard from './components/ParticipantCard.vue'
 import ControlBar from './components/ControlBar.vue'
@@ -357,27 +407,95 @@ import AnimeQuizView from './components/AnimeQuizView.vue'
 import MusicQuizView from './components/MusicQuizView.vue'
 
 const {
-  myId, myInfo, myStatus,
+  myId, myInfo, myStatus, currentRoomId,
   participantsList, screenSharersList,
-  localStream, screenStream,
-  isMuted, isDeafened, isScreenSharing, localSpeaking, localLastVoiceAt, activeScreenSharer,
+  localStream, screenStream, webcamStream,
+  isMuted, isDeafened, isScreenSharing, isWebcamActive,
+  localSpeaking, localLastVoiceAt, activeScreenSharer,
   connected, error, hasJoined,
   chatMessages, chatUnread,
   screenShareSettings, musicState,
   join, leave, toggleMute, setMuted, toggleDeafen,
   setStatus, sendChatMessage, clearChatUnread, setChatOpen,
-  startScreenShare, stopScreenShare, setParticipantVolume,
+  startScreenShare, stopScreenShare, startWebcam, stopWebcam, setParticipantVolume, setParticipantScreenVolume,
+  setAudioInputDevice, setAudioOutputDevice,
+  audioInputDeviceId, audioOutputDeviceId,
   quizState, musicQuizState,
 } = useConference()
 
-// Keep composable instances for local data (animePool for autocomplete, screenshots)
 useAnimeQuiz()
 useMusicQuiz()
 
+// ─── Room routing ──────────────────────────────────────────────────────────────
+// selectedRoom is null → show LandingModal; set → show JoinModal
+const selectedRoom = ref(null)
+
+// On page load: if URL has #hash, skip landing and go straight to room join
+onMounted(async () => {
+  const hash = location.hash.slice(1)
+  if (hash) {
+    await resolveRoomFromHash(hash)
+  }
+})
+
+async function resolveRoomFromHash(roomId) {
+  try {
+    const res = await fetch(`/api/rooms/info?room=${encodeURIComponent(roomId)}`)
+    const info = await res.json()
+    if (info.exists) {
+      selectedRoom.value = { roomId, needsPassword: info.hasPassword }
+    } else {
+      // Room doesn't exist yet — check if it looks like a valid ID
+      if (/^[a-z0-9_-]{4,32}$/.test(roomId)) {
+        // Try to create it (open room)
+        const cr = await fetch('/api/rooms/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roomId, password: '' }),
+        })
+        selectedRoom.value = { roomId, needsPassword: false }
+      } else {
+        // Invalid hash — show landing
+        history.replaceState(null, '', location.pathname)
+        selectedRoom.value = null
+      }
+    }
+  } catch {
+    selectedRoom.value = { roomId, needsPassword: false }
+  }
+}
+
+async function handleRoomSelected({ roomId, password }) {
+  selectedRoom.value = null
+  // default room always exists; custom rooms are created via LandingModal
+  const needsPassword = roomId !== 'default' ? false : false
+  try {
+    const res = await fetch(`/api/rooms/info?room=${encodeURIComponent(roomId)}`)
+    const info = await res.json()
+    selectedRoom.value = { roomId, needsPassword: info.hasPassword }
+    if (roomId !== 'default') {
+      history.replaceState(null, '', '#' + roomId)
+    }
+  } catch {
+    selectedRoom.value = { roomId, needsPassword: false }
+  }
+}
+
+// ─── Link copy ──────────────────────────────────────────────────────────────
+const linkCopied = ref(false)
+let linkCopiedTimer = null
+
+function copyRoomLink() {
+  const url = location.origin + location.pathname + '#' + currentRoomId.value
+  navigator.clipboard.writeText(url).then(() => {
+    linkCopied.value = true
+    clearTimeout(linkCopiedTimer)
+    linkCopiedTimer = setTimeout(() => { linkCopied.value = false }, 2500)
+  }).catch(() => {})
+}
+
 // ─── Mini-games ──────────────────────────────────────────────────────────────
 const entertainmentOpen = ref(false)
-
-// 3-way view: 'auto' = game takes priority, 'stream' = show only stream, 'split' = side-by-side
 const stageView = ref('auto')
 
 const isAnimeQuizActive  = computed(() => quizState.value?.phase && quizState.value.phase !== 'idle')
@@ -414,7 +532,6 @@ watch(isDeafened, (d) => {
   if (musicAudioEl.value) musicAudioEl.value.muted = d
 }, { immediate: true })
 
-// Apply volume when the audio element mounts
 function onMusicAudioMounted(el) {
   if (el) {
     musicAudioEl.value = el
@@ -423,8 +540,6 @@ function onMusicAudioMounted(el) {
   }
 }
 
-// If the stream errors or stalls, reconnect with a cache-busted URL so the
-// browser doesn't give up on the audio element permanently.
 let _musicReconnectTimer = null
 function _reconnectMusicStream() {
   if (_musicReconnectTimer) return
@@ -433,7 +548,7 @@ function _reconnectMusicStream() {
     const el = musicAudioEl.value
     if (!el || !musicState.value?.playing) return
     const vol = el.volume
-    el.src = '/api/music/stream?t=' + Date.now()
+    el.src = `/api/music/stream?room=${currentRoomId.value}&t=` + Date.now()
     el.volume = vol
     el.muted = isDeafened.value
     el.play().catch(() => {})
@@ -449,7 +564,7 @@ function onMusicStreamStalled() {
 }
 
 // ─── Stage resize ───────────────────────────────────────────────────────────
-const stageHeight = ref(null) // null = auto (flex: 1)
+const stageHeight = ref(null)
 const stageStyle  = computed(() =>
   stageHeight.value !== null ? { flex: 'none', height: stageHeight.value + 'px' } : {}
 )
@@ -466,7 +581,6 @@ function startResize(e) {
 function onResizeMove(e) {
   const delta = e.clientY - resizeStartY
   const newH  = resizeStartH + delta
-  // Never allow dragging participants strip off screen: keep at least strip height visible
   const mainEl  = document.querySelector('.room-main')
   const stripEl = document.querySelector('.participants-strip')
   const handleH = 6
@@ -480,7 +594,7 @@ function onResizeUp() {
   document.removeEventListener('mouseup', onResizeUp)
 }
 
-// ─── Participants overflow detection ────────────────────────────────────────
+// ─── Participants overflow ───────────────────────────────────────────────────
 const stripEl      = ref(null)
 const stripInnerEl = ref(null)
 const hasOverflow  = ref(false)
@@ -492,7 +606,6 @@ function checkOverflow() {
   hasOverflow.value = el.scrollWidth > el.clientWidth + 2
 }
 
-// ─── Real viewport height (fixes 100vh on mobile browsers) ─────────────────
 function updateRealVh() {
   document.documentElement.style.setProperty('--real-100vh', `${window.innerHeight}px`)
 }
@@ -521,10 +634,7 @@ onMounted(() => {
 watch(() => participantsList.value.length, () => nextTick(checkOverflow))
 
 onBeforeUnmount(() => {
-  if (afkInterval) {
-    clearInterval(afkInterval)
-    afkInterval = null
-  }
+  if (afkInterval) { clearInterval(afkInterval); afkInterval = null }
   stopPushToTalk()
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeUp)
@@ -536,7 +646,7 @@ onBeforeUnmount(() => {
   overflowObserver?.disconnect()
 })
 
-// Include local screen share so the owner can see their own stream
+// ─── Sharers ────────────────────────────────────────────────────────────────
 const allSharers = computed(() => {
   const remote = screenSharersList.value
   if (!isScreenSharing.value || !screenStream.value) return remote
@@ -557,10 +667,12 @@ const localParticipant = computed(() => ({
   avatar: myInfo.value?.avatar ?? '',
   speaking: localSpeaking.value,
   muted: isMuted.value,
+  isDeafened: isDeafened.value,
   lastVoiceActivityAt: localLastVoiceAt.value,
   status: myStatus.value,
   volume: 1.0,
   hasScreenShare: isScreenSharing.value,
+  webcamStream: isWebcamActive.value ? webcamStream.value : null,
 }))
 
 const MIC_IDLE_MS = 5 * 60 * 1000
@@ -577,7 +689,7 @@ function participantMicIdleLong(p) {
   return Date.now() - t > MIC_IDLE_MS
 }
 
-// Virtual "Музыкант Бот" participant — appears when music is playing
+// Virtual participants (bots)
 const musicBotParticipant = computed(() => {
   if (!musicState.value?.playing) return null
   return {
@@ -592,7 +704,6 @@ const musicBotParticipant = computed(() => {
   }
 })
 
-// Virtual "Аниме Квиз Бот" participant — appears when quiz is active
 const quizBotParticipant = computed(() => {
   const phase = quizState.value?.phase
   if (!phase || phase === 'idle') return null
@@ -609,7 +720,6 @@ const quizBotParticipant = computed(() => {
   }
 })
 
-// Virtual "Музыкальный Квиз Бот" participant — appears when music quiz is active
 const musicQuizBotParticipant = computed(() => {
   const phase = musicQuizState.value?.phase
   if (!phase || phase === 'idle') return null
@@ -626,7 +736,6 @@ const musicQuizBotParticipant = computed(() => {
   }
 })
 
-// Unified volume handler: routes bots → appropriate sink, others → WebRTC audio
 function handleVolumeChange(id, value) {
   if (id === '__music_bot__') {
     musicVolume.value = value
@@ -635,6 +744,10 @@ function handleVolumeChange(id, value) {
   } else {
     setParticipantVolume(id, value)
   }
+}
+
+function handleScreenVolumeChange(id, value) {
+  setParticipantScreenVolume(id, value)
 }
 
 function handleToggleMusic() {
@@ -670,13 +783,8 @@ async function handleQuizStop() {
   await quizStopGame()
 }
 
-async function handleQuizStart() {
-  await quizStartGame()
-}
-
-async function handleQuizAgain() {
-  await quizPlayAgain()
-}
+async function handleQuizStart() { await quizStartGame() }
+async function handleQuizAgain() { await quizPlayAgain() }
 
 function handleQuizAnswerCorrect({ name }) {
   sendChatMessage(`🎌 ${name} угадал аниме!`)
@@ -686,7 +794,6 @@ async function handleQuizRetry() {
   await quizRetryLoad({ id: myId.value, name: myInfo.value?.name ?? 'Участник', avatar: myInfo.value?.avatar ?? '' })
 }
 
-// ─── Music quiz handlers ──────────────────────────────────────────────────────
 async function handleStartMusicQuiz(settings = {}) {
   entertainmentOpen.value = false
   try {
@@ -715,8 +822,11 @@ function handleMusicQuizAnswerCorrect({ name }) {
   sendChatMessage(`🎵 ${name} угадал аниме!`)
 }
 
-async function handleJoin({ name, avatar }) {
-  await join(name, avatar)
+async function handleJoin({ name, avatar, password }) {
+  const roomId = selectedRoom.value?.roomId ?? 'default'
+  setQuizRoom(roomId)
+  setMusicQuizRoom(roomId)
+  await join(name, avatar, roomId, password)
 }
 
 async function handleScreenShare() {
@@ -724,9 +834,12 @@ async function handleScreenShare() {
   else await startScreenShare()
 }
 
-function handleSetStatus(status) {
-  setStatus(status)
+async function handleToggleWebcam() {
+  if (isWebcamActive.value) await stopWebcam()
+  else await startWebcam()
 }
+
+function handleSetStatus(status) { setStatus(status) }
 
 function handleToggleChat() {
   chatOpen.value = !chatOpen.value
@@ -739,21 +852,21 @@ function handleCloseChat() {
   setChatOpen(false)
 }
 
-function handleSendChat(text) {
-  sendChatMessage(text)
-}
+function handleSendChat(text) { sendChatMessage(text) }
 
 function handleLeave() {
   stopPushToTalk()
   chatOpen.value = false
   setChatOpen(false)
   leave()
+  // Go back to landing
+  selectedRoom.value = null
+  history.replaceState(null, '', location.pathname)
 }
 
 function handleTogglePushToTalk() {
   const nextEnabled = !pushToTalkEnabled.value
   pushToTalkEnabled.value = nextEnabled
-
   if (nextEnabled) {
     stopPushToTalk()
     if (localStream.value && !isMuted.value) setMuted(true)
@@ -783,7 +896,6 @@ function shouldStartPushToTalk(e) {
 function onGlobalKeydown(e) {
   if (!shouldStartPushToTalk(e)) return
   if (!isMuted.value) return
-
   e.preventDefault()
   pushToTalkWasMuted = true
   pushToTalkActive.value = true
@@ -798,7 +910,6 @@ function onGlobalKeyup(e) {
 
 function stopPushToTalk() {
   if (!pushToTalkActive.value) return
-
   pushToTalkActive.value = false
   if (pushToTalkWasMuted) setMuted(true)
   pushToTalkWasMuted = false
@@ -840,9 +951,6 @@ body {
 .app {
   position: relative;
   width: 100%;
-  /* 100vh is wrong on mobile (includes browser chrome that hides/shows).
-     100dvh = dynamic viewport height, tracks the actual visible area.
-     The JS in onMounted sets --real-100vh as a reliable fallback. */
   height: 100vh;
   height: 100dvh;
   height: var(--real-100vh, 100dvh);
@@ -891,6 +999,15 @@ body {
 
 .room-info { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 
+.room-id-badge {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 4px;
+  font-family: 'Orbitron', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+  color: #9d4edd; border: 1px solid #9d4edd; background: rgba(157,78,221,0.08);
+  cursor: pointer; transition: background 0.15s;
+}
+.room-id-badge:hover { background: rgba(157,78,221,0.16); }
+
 .status-badge {
   display: flex; align-items: center; gap: 6px;
   padding: 4px 10px; border-radius: 4px;
@@ -932,7 +1049,7 @@ body {
 }
 .room-main.chat-open { margin-right: 320px; }
 
-/* ─── Stage (screen share / placeholder) ────────────────────────────────── */
+/* ─── Stage ──────────────────────────────────────────────────────────────── */
 .stage-area {
   flex: 1;
   min-height: 80px;
@@ -945,7 +1062,6 @@ body {
   flex-direction: column;
   gap: 0;
 }
-/* Push content below the tab bar when it's visible */
 .stage-area.has-tabs { padding-top: 40px; }
 
 /* ─── Resize handle ──────────────────────────────────────────────────────── */
@@ -960,26 +1076,20 @@ body {
 .resize-handle::after {
   content: '';
   position: absolute;
-  left: 50%;
-  top: 50%;
+  left: 50%; top: 50%;
   transform: translate(-50%, -50%);
-  width: 40px;
-  height: 3px;
+  width: 40px; height: 3px;
   border-radius: 2px;
   background: #2e2e5f;
   transition: background 0.15s, width 0.15s;
 }
-.resize-handle:hover::after {
-  background: #9d4edd;
-  width: 70px;
-}
+.resize-handle:hover::after { background: #9d4edd; width: 70px; }
 
 .stage-placeholder {
   display: flex; align-items: center; justify-content: center;
   width: 100%; height: 100%;
 }
 
-/* Split screen layout */
 .stage-split {
   display: flex;
   width: 100%;
@@ -994,15 +1104,12 @@ body {
   position: relative;
 }
 
-/* View-mode tab bar */
 .view-tabs {
   position: absolute;
-  top: 8px;
-  left: 50%;
+  top: 8px; left: 50%;
   transform: translateX(-50%);
   z-index: 20;
-  display: flex;
-  gap: 2px;
+  display: flex; gap: 2px;
   background: rgba(8,8,18,0.88);
   border: 1px solid rgba(157,78,221,0.3);
   border-radius: 8px;
@@ -1011,57 +1118,46 @@ body {
 }
 .view-tabs button {
   padding: 4px 12px;
-  border: none;
-  border-radius: 5px;
+  border: none; border-radius: 5px;
   background: transparent;
-  color: #7070a0;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  color: #7070a0; font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: background 0.15s, color 0.15s;
 }
 .view-tabs button:hover { background: rgba(157,78,221,0.12); color: #c8c8e8; }
 .view-tabs button.active { background: rgba(157,78,221,0.2); color: #c580ff; }
 
-/* ─── Participants strip (bottom) ────────────────────────────────────────── */
+/* ─── Participants strip ─────────────────────────────────────────────────── */
 .participants-strip {
   flex-shrink: 0;
   position: relative;
-  overflow: hidden;            /* no scrollbar; expand button handles overflow */
+  overflow: hidden;
   border-top: 1px solid var(--border);
   padding: 10px 16px 12px;
 }
 
-/* Inner wrapper: centered when it fits, left-aligned when it scrolls */
 .participants-inner {
   display: flex;
   gap: 10px;
   align-items: flex-end;
-  width: max-content;      /* shrink to content width */
-  min-width: 100%;         /* at least full strip width */
-  justify-content: center; /* center when content < strip width */
+  width: max-content;
+  min-width: 100%;
+  justify-content: center;
 }
 
 /* ─── Expand button ──────────────────────────────────────────────────────── */
 .expand-btn {
   position: absolute;
-  right: 10px;
-  top: 50%;
+  right: 10px; top: 50%;
   transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: flex; align-items: center; gap: 6px;
   padding: 6px 12px;
   border-radius: 8px;
   border: 1px solid #9d4edd;
   background: rgba(8, 8, 18, 0.92);
   backdrop-filter: blur(8px);
   color: #c8a0f0;
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
+  font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
+  cursor: pointer; white-space: nowrap;
   transition: all 0.15s;
   box-shadow: 0 0 12px rgba(157, 78, 221, 0.25);
   z-index: 10;
@@ -1076,137 +1172,95 @@ body {
 
 /* ─── Participants modal ─────────────────────────────────────────────────── */
 .participants-modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 500;
-  background: rgba(5, 5, 16, 0.8);
-  backdrop-filter: blur(6px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  position: fixed; inset: 0; z-index: 500;
+  background: rgba(5, 5, 16, 0.8); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
 }
-
 .participants-modal {
-  background: #0d0d22;
-  border: 1px solid #2e2e5f;
-  border-radius: 14px;
-  width: min(900px, 100%);
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
+  background: #0d0d22; border: 1px solid #2e2e5f; border-radius: 14px;
+  width: min(900px, 100%); max-height: 80vh;
+  display: flex; flex-direction: column;
   box-shadow: 0 24px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(157,78,221,0.1);
   overflow: hidden;
 }
-
 .modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
-  border-bottom: 1px solid #1e1e3f;
-  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid #1e1e3f; flex-shrink: 0;
 }
-
 .modal-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: 'Orbitron', sans-serif;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  color: #9d4edd;
+  display: flex; align-items: center; gap: 8px;
+  font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 700;
+  letter-spacing: 2px; color: #9d4edd;
 }
-
 .modal-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid #2e2e5f;
-  border-radius: 6px;
-  background: transparent;
-  color: #7070a0;
-  cursor: pointer;
-  transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px;
+  border: 1px solid #2e2e5f; border-radius: 6px;
+  background: transparent; color: #7070a0; cursor: pointer; transition: all 0.15s;
 }
 .modal-close:hover { border-color: #ff2957; color: #ff2957; }
-
 .modal-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 18px;
-  overflow-y: auto;
+  display: flex; flex-wrap: wrap; gap: 12px;
+  padding: 18px; overflow-y: auto;
   justify-content: center;
-  scrollbar-width: thin;
-  scrollbar-color: #2e2e5f transparent;
+  scrollbar-width: thin; scrollbar-color: #2e2e5f transparent;
 }
 .modal-grid::-webkit-scrollbar { width: 4px; }
 .modal-grid::-webkit-scrollbar-thumb { background: #2e2e5f; border-radius: 2px; }
 
-/* Modal transition */
 .modal-enter-active { transition: opacity 0.2s, transform 0.2s; }
 .modal-leave-active { transition: opacity 0.15s, transform 0.15s; }
 .modal-enter-from   { opacity: 0; transform: scale(0.95); }
 .modal-leave-to     { opacity: 0; transform: scale(0.97); }
 
-/* ─── Mobile responsive ──────────────────────────────────────────────────── */
-@media (max-width: 640px) {
-  :root {
-    --header-h: 48px;
-    --bar-h: 58px;
-  }
+/* ─── Link copied toast ──────────────────────────────────────────────────── */
+.link-toast {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: rgba(157,78,221,0.2);
+  border: 1px solid #9d4edd;
+  color: #c8a0f0;
+  padding: 8px 18px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
 
-  /* Header: account for top notch (Dynamic Island, etc.) */
+.toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(10px); }
+
+/* ─── Mobile ─────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  :root { --header-h: 48px; --bar-h: 58px; }
   .room-header {
     padding-top: max(0px, env(safe-area-inset-top));
     height: calc(var(--header-h) + env(safe-area-inset-top));
     min-height: calc(var(--header-h) + env(safe-area-inset-top));
   }
-
-  /* Chat slides over content instead of pushing it */
   .room-main.chat-open { margin-right: 0; }
-
-  /* No drag-resize on touch */
   .resize-handle { display: none; }
-
-  /* Header compact */
   .room-header { padding: 0 10px; gap: 8px; }
   .logo { font-size: 17px; letter-spacing: 1px; }
   .status-badge { font-size: 8px; padding: 3px 7px; letter-spacing: 0.5px; }
   .participant-count { padding: 3px 7px; font-size: 11px; }
-
-  /* Stage stays flexible */
   .stage-area { padding: 4px; min-height: 50px; }
-
-  /* Participants strip: touch-scroll horizontally */
   .participants-strip {
-    overflow-x: auto;
-    overflow-y: visible;
+    overflow-x: auto; overflow-y: visible;
     -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    padding: 8px 10px 10px;
+    scrollbar-width: none; padding: 8px 10px 10px;
   }
   .participants-strip::-webkit-scrollbar { display: none; }
-  .participants-inner {
-    justify-content: flex-start;
-    gap: 8px;
-  }
-
-  /* Expand button repositioned for small screens */
+  .participants-inner { justify-content: flex-start; gap: 8px; }
   .expand-btn { font-size: 11px; padding: 5px 9px; }
-
-  /* Participants modal full-screen */
   .participants-modal-overlay { padding: 0; }
   .participants-modal {
-    width: 100%;
-    max-height: 100%;
-    border-radius: 0;
-    border-left: none;
-    border-right: none;
+    width: 100%; max-height: 100%;
+    border-radius: 0; border-left: none; border-right: none;
   }
   .modal-grid { gap: 8px; padding: 12px; }
 }

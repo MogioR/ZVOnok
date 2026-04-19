@@ -18,9 +18,11 @@ Go handles signaling, static file serving, and the music API, while the browser 
 - ✅ Mobile version
 - ✅ Streams with quality selection
 - ✅ Ability to queue music from YouTube
-- 🚧 Minigames
-- 🚧 Webcam video
-- 🚧 Rooms
+- 🚧 Webcam video (in participant cards)
+- ✅ Password-protected rooms
+- ✅ Independent volume control for voice and screen share
+- ✅ Mini-games (anime image quiz / opening song quiz)
+
 
 ## Stack
 

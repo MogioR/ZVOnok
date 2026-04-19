@@ -7,23 +7,57 @@
         <div class="modal-logo">
           <span class="accent">Z</span>VOnok
         </div>
-        <p class="modal-sub">ВИДЕОКОНФЕРЕНЦИИ СЛЕДУЮЩЕГО УРОВНЯ</p>
+        <p v-if="roomId && roomId !== 'default'" class="room-label">
+          <span class="room-icon">🔑</span>
+          КОМНАТА: {{ roomId }}
+        </p>
+        <p v-else class="modal-sub">ВИДЕОКОНФЕРЕНЦИИ СЛЕДУЮЩЕГО УРОВНЯ</p>
       </div>
 
-      <div class="avatar-preview-wrap">
-        <div class="avatar-ring" :class="{ 'has-avatar': avatarUrl }">
-          <img
-            v-if="avatarPreview"
-            :src="avatarPreview"
-            class="avatar-img"
-            alt="avatar"
-            @error="avatarPreview = null"
-          />
-          <div v-else class="avatar-placeholder">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/>
+      <!-- Media preview -->
+      <div class="preview-row">
+        <!-- Microphone level -->
+        <div class="preview-block mic-block">
+          <div class="preview-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
             </svg>
+            МИКРОФОН
           </div>
+          <div class="mic-bar-wrap">
+            <div class="mic-bar-fill" :style="{ width: micLevel + '%' }" />
+          </div>
+          <div class="preview-status" :class="micOk ? 'ok' : 'err'">
+            {{ micOk ? 'Работает' : (micError || 'Нет доступа') }}
+          </div>
+        </div>
+
+        <!-- Camera preview -->
+        <div class="preview-block cam-block">
+          <div class="preview-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+            </svg>
+            КАМЕРА
+          </div>
+          <div class="cam-wrap">
+            <video
+              v-if="camStream"
+              ref="previewVideoEl"
+              class="cam-preview"
+              autoplay
+              playsinline
+              muted
+            />
+            <div v-else class="cam-placeholder">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.3">
+                <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+              </svg>
+            </div>
+          </div>
+          <button class="cam-toggle" :class="{ active: camStream }" @click="toggleCamera">
+            {{ camStream ? 'Выкл. камеру' : 'Вкл. камеру' }}
+          </button>
         </div>
       </div>
 
@@ -51,11 +85,23 @@
           />
         </div>
 
+        <div v-if="needsPassword" class="field">
+          <label class="field-label">ПАРОЛЬ КОМНАТЫ</label>
+          <input
+            v-model="password"
+            class="field-input"
+            type="password"
+            placeholder="Введите пароль..."
+            maxlength="64"
+            required
+          />
+        </div>
+
         <div v-if="props.error" class="form-error">
           {{ props.error }}
         </div>
 
-        <button type="submit" class="join-btn" :disabled="!name.trim()">
+        <button type="submit" class="join-btn" :disabled="!name.trim() || (needsPassword && !password.trim())">
           <span class="btn-text">ВОЙТИ В КОМНАТУ</span>
           <span class="btn-arrow">▶</span>
         </button>
@@ -65,14 +111,17 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 
 const props = defineProps({
-  error: { type: String, default: null },
+  error:         { type: String,  default: null },
+  roomId:        { type: String,  default: 'default' },
+  needsPassword: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['join'])
 
+// ─── Cookie helpers ────────────────────────────────────────────────────────
 function getCookie(key) {
   const m = document.cookie.match(
     new RegExp('(?:^|; )' + key.replace(/[[\]{}()*+?.,\\^$|#\s]/g, '\\$&') + '=([^;]*)')
@@ -85,24 +134,101 @@ function setCookie(key, value) {
   document.cookie = `${key}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`
 }
 
-const savedName = getCookie('zvonok_name')
+const savedName   = getCookie('zvonok_name')
 const savedAvatar = getCookie('zvonok_avatar')
 
-const name = ref(savedName)
+const name      = ref(savedName)
 const avatarUrl = ref(savedAvatar)
-const avatarPreview = ref(savedAvatar || null)
+const password  = ref('')
 
-watch(avatarUrl, (val) => {
-  avatarPreview.value = val.trim() || null
+// ─── Mic preview ───────────────────────────────────────────────────────────
+const micLevel = ref(0)
+const micOk    = ref(false)
+const micError = ref('')
+
+let micStream    = null
+let micCtx       = null
+let micAnalyser  = null
+let micTimer     = null
+
+async function startMicPreview() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+      video: false,
+    })
+    micOk.value = true
+    micCtx = new AudioContext()
+    micAnalyser = micCtx.createAnalyser()
+    micAnalyser.fftSize = 256
+    micCtx.createMediaStreamSource(micStream).connect(micAnalyser)
+    const data = new Uint8Array(micAnalyser.frequencyBinCount)
+    micTimer = setInterval(() => {
+      micAnalyser.getByteFrequencyData(data)
+      const avg = data.reduce((a, b) => a + b, 0) / data.length
+      micLevel.value = Math.min(100, avg * 2.5)
+    }, 80)
+  } catch (e) {
+    micError.value = 'Нет доступа к микрофону'
+  }
+}
+
+function stopMicPreview() {
+  if (micTimer) { clearInterval(micTimer); micTimer = null }
+  if (micCtx) { micCtx.close(); micCtx = null }
+  micAnalyser = null
+  if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null }
+  micLevel.value = 0
+}
+
+// ─── Camera preview ────────────────────────────────────────────────────────
+const camStream     = ref(null)
+const previewVideoEl = ref(null)
+
+async function toggleCamera() {
+  if (camStream.value) {
+    camStream.value.getTracks().forEach((t) => t.stop())
+    camStream.value = null
+    if (previewVideoEl.value) previewVideoEl.value.srcObject = null
+  } else {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      camStream.value = s
+      nextTick(() => {
+        if (previewVideoEl.value) {
+          previewVideoEl.value.srcObject = s
+          previewVideoEl.value.play().catch(() => {})
+        }
+      })
+    } catch (e) {
+      console.warn('Camera denied:', e)
+    }
+  }
+}
+
+// ─── Lifecycle ─────────────────────────────────────────────────────────────
+onMounted(() => {
+  startMicPreview()
 })
 
+onBeforeUnmount(() => {
+  stopMicPreview()
+  if (camStream.value) {
+    camStream.value.getTracks().forEach((t) => t.stop())
+    camStream.value = null
+  }
+})
+
+// ─── Submit ────────────────────────────────────────────────────────────────
 function handleSubmit() {
   if (!name.value.trim()) return
+  if (props.needsPassword && !password.value.trim()) return
   setCookie('zvonok_name', name.value.trim())
   setCookie('zvonok_avatar', avatarUrl.value.trim())
   emit('join', {
-    name: name.value.trim(),
-    avatar: avatarUrl.value.trim(),
+    name:     name.value.trim(),
+    avatar:   avatarUrl.value.trim(),
+    password: password.value.trim(),
   })
 }
 </script>
@@ -117,16 +243,18 @@ function handleSubmit() {
   justify-content: center;
   background: rgba(8, 8, 18, 0.95);
   backdrop-filter: blur(12px);
+  overflow-y: auto;
+  padding: 20px;
 }
 
 .modal {
   position: relative;
-  width: 420px;
-  max-width: calc(100vw - 32px);
+  width: 480px;
+  max-width: 100%;
   background: #0f0f1e;
   border: 1px solid #2e2e5f;
   border-radius: 12px;
-  padding: 40px 36px;
+  padding: 32px 32px 28px;
   overflow: hidden;
 }
 
@@ -143,12 +271,12 @@ function handleSubmit() {
 
 .modal-header {
   text-align: center;
-  margin-bottom: 28px;
+  margin-bottom: 20px;
 }
 
 .modal-logo {
   font-family: 'Orbitron', sans-serif;
-  font-size: 36px;
+  font-size: 30px;
   font-weight: 900;
   letter-spacing: 4px;
   color: #e8e8ff;
@@ -167,46 +295,123 @@ function handleSubmit() {
   font-weight: 400;
   letter-spacing: 3px;
   color: #7070a0;
+  margin: 0;
 }
 
-.avatar-preview-wrap {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 24px;
-}
-
-.avatar-ring {
-  width: 80px;
-  height: 80px;
-  border-radius: 50%;
-  border: 2px solid #1e1e3f;
+.room-label {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: border-color 0.3s, box-shadow 0.3s;
+  gap: 6px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: #9d4edd;
+  margin: 0;
+}
+
+.room-icon { font-size: 13px; }
+
+/* ─── Media preview ───────────────────────────────────────────────────────── */
+.preview-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.preview-block {
+  background: rgba(15, 15, 30, 0.8);
+  border: 1px solid #1e1e3f;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.preview-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: #7070a0;
+}
+
+/* Mic level bar */
+.mic-bar-wrap {
+  height: 5px;
+  background: #1e1e3f;
+  border-radius: 3px;
   overflow: hidden;
-  background: #12122a;
 }
 
-.avatar-ring.has-avatar {
-  border-color: #9d4edd;
-  box-shadow: 0 0 12px rgba(157, 78, 221, 0.5), 0 0 30px rgba(157, 78, 221, 0.2);
+.mic-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #39ff14, #00f5ff);
+  border-radius: 3px;
+  transition: width 0.08s linear;
 }
 
-.avatar-img {
+.preview-status {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.preview-status.ok  { color: #39ff14; }
+.preview-status.err { color: #ff2957; }
+
+/* Camera */
+.cam-wrap {
+  width: 100%;
+  aspect-ratio: 4/3;
+  background: #080812;
+  border-radius: 5px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cam-preview {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transform: scaleX(-1); /* mirror */
 }
 
-.avatar-placeholder {
-  color: #2e2e5f;
+.cam-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
 }
 
+.cam-toggle {
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid #2e2e5f;
+  background: transparent;
+  color: #7070a0;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+  align-self: flex-start;
+}
+
+.cam-toggle:hover { border-color: #9d4edd; color: #c8a0f0; }
+.cam-toggle.active { border-color: #39ff14; color: #39ff14; }
+
+/* ─── Form ────────────────────────────────────────────────────────────────── */
 .modal-form {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 
 .field {
@@ -228,7 +433,7 @@ function handleSubmit() {
   font-size: 11px;
   letter-spacing: 0;
   text-transform: none;
-  color: #4040606;
+  color: #404060;
 }
 
 .field-input {
@@ -261,12 +466,12 @@ function handleSubmit() {
 }
 
 .join-btn {
-  margin-top: 6px;
+  margin-top: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 13px 20px;
+  padding: 12px 20px;
   background: linear-gradient(135deg, #6b2fa0, #9d4edd);
   border: 1px solid #9d4edd;
   border-radius: 6px;
@@ -313,5 +518,11 @@ function handleSubmit() {
 
 .join-btn:hover:not(:disabled) .btn-arrow {
   transform: translateX(3px);
+}
+
+@media (max-width: 480px) {
+  .modal { padding: 24px 18px 20px; }
+  .preview-row { grid-template-columns: 1fr; }
+  .cam-wrap { aspect-ratio: 16/9; }
 }
 </style>

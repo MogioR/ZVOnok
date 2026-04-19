@@ -201,10 +201,15 @@
 import { ref, watch, nextTick, computed, onUnmounted } from 'vue'
 
 const props = defineProps({
-  open:  { type: Boolean, required: true },
-  state: { type: Object,  required: true },
+  open:   { type: Boolean, required: true },
+  state:  { type: Object,  required: true },
+  roomId: { type: String,  default: 'default' },
 })
 const emit = defineEmits(['close'])
+
+function apiUrl(path) {
+  return `/api/music/${path}?room=${props.roomId}`
+}
 
 // ─── Playback progress ────────────────────────────────────────────────────────
 const position = ref(0)
@@ -249,18 +254,33 @@ watch(() => props.open, (v) => {
 
 // ─── Detect YouTube URL vs search query ───────────────────────────────────
 const YT_RE = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//
-/** Ссылка с параметром list= — плейлист или «очередь» YouTube. */
 const YT_PLAYLIST_RE = /[?&]list=[^&#\s]+/i
+const YT_VIDEO_ID_RE = /[?&]v=[^&#\s]+/
 
-const playlistHintVisible = computed(() => {
-  const q = query.value.trim()
-  return YT_RE.test(q) && YT_PLAYLIST_RE.test(q)
-})
+/**
+ * Returns true only for URLs that point to an actual playlist (not a video
+ * that happens to be part of a playlist).
+ * - youtu.be/ID?list=...  → individual video from playlist → false
+ * - youtube.com/watch?v=X&list=Y → individual video from playlist → false
+ * - youtube.com/playlist?list=Y → real playlist → true
+ * - youtube.com/watch?list=Y (no v=) → real playlist → true
+ */
+function isYtPlaylist(url) {
+  if (!YT_RE.test(url)) return false
+  if (!YT_PLAYLIST_RE.test(url)) return false
+  // Has a specific video ID → it's a video, not the playlist itself
+  if (YT_VIDEO_ID_RE.test(url)) return false
+  // youtu.be/ID always refers to a specific video
+  if (/youtu\.be\/[^/?]+/.test(url)) return false
+  return true
+}
+
+const playlistHintVisible = computed(() => isYtPlaylist(query.value.trim()))
 
 let debounceTimer = null
 function onQueryInput() {
   clearTimeout(debounceTimer)
-  if (YT_RE.test(query.value.trim())) {
+  if (YT_RE.test(query.value.trim()) || isYtPlaylist(query.value.trim())) {
     searchResults.value = []
     return
   }
@@ -281,7 +301,7 @@ function showPlaylistToast(text) {
 async function addPlaylistFromURL(url) {
   playlistAdding.value = true
   try {
-    const res = await fetch('/api/music/add-playlist', {
+    const res = await fetch(apiUrl('add-playlist'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
@@ -305,13 +325,13 @@ async function handleSearch() {
   const q = query.value.trim()
   if (!q) return
 
-  // YouTube с плейлистом → все видео из list=
-  if (YT_RE.test(q) && YT_PLAYLIST_RE.test(q)) {
+  // Actual playlist URL (no specific video ID)
+  if (isYtPlaylist(q)) {
     await addPlaylistFromURL(q)
     return
   }
 
-  // Одно видео по прямой ссылке
+  // Individual YouTube video (including videos with list= context)
   if (YT_RE.test(q)) {
     await addByURL(q, '')
     query.value = ''
@@ -320,7 +340,7 @@ async function handleSearch() {
 
   searching.value = true
   try {
-    const res = await fetch(`/api/music/search?q=${encodeURIComponent(q)}`)
+    const res = await fetch(apiUrl('search') + `&q=${encodeURIComponent(q)}`)
     if (res.ok) searchResults.value = (await res.json()) ?? []
   } catch (e) {
     console.error('[music] search error:', e)
@@ -341,7 +361,7 @@ async function addByURL(url, title) {
 
 async function addTrackToQueue(track) {
   try {
-    await fetch('/api/music/add', {
+    await fetch(apiUrl('add'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(track),
@@ -352,11 +372,11 @@ async function addTrackToQueue(track) {
 }
 
 async function skip() {
-  await fetch('/api/music/skip', { method: 'POST' })
+  await fetch(apiUrl('skip'), { method: 'POST' })
 }
 
 async function remove(idx) {
-  await fetch('/api/music/remove', {
+  await fetch(apiUrl('remove'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ index: idx }),
@@ -364,7 +384,7 @@ async function remove(idx) {
 }
 
 async function clear() {
-  await fetch('/api/music/clear', { method: 'POST' })
+  await fetch(apiUrl('clear'), { method: 'POST' })
 }
 
 function fmtDuration(sec) {

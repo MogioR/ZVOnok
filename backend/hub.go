@@ -47,6 +47,11 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 	forward    chan *forwardMsg
+
+	// password is checked on join; "" = open room.
+	password string
+	// onEmpty is called (once) when the last client disconnects.
+	onEmpty func()
 }
 
 type forwardMsg struct {
@@ -64,12 +69,13 @@ type WSMessage struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-func newHub() *Hub {
+func newHub(password string) *Hub {
 	return &Hub{
 		clients:    make(map[string]*Client),
 		register:   make(chan *Client, 64),
 		unregister: make(chan *Client, 64),
 		forward:    make(chan *forwardMsg, 512),
+		password:   password,
 	}
 }
 
@@ -105,6 +111,7 @@ func (h *Hub) run() {
 			if _, ok := h.clients[client.Participant.ID]; ok {
 				delete(h.clients, client.Participant.ID)
 				close(client.send)
+				remaining := len(h.clients)
 				h.mu.Unlock()
 
 				if client.joined {
@@ -114,6 +121,11 @@ func (h *Hub) run() {
 						From:    client.Participant.ID,
 						Payload: leavePayload,
 					})
+				}
+
+				// Notify the room manager when the room becomes empty.
+				if remaining == 0 && h.onEmpty != nil {
+					go h.onEmpty()
 				}
 			} else {
 				h.mu.Unlock()
@@ -245,12 +257,19 @@ func (c *Client) readPump() {
 		switch msg.Type {
 		case "join":
 			var info struct {
-				Name   string `json:"name"`
-				Avatar string `json:"avatar"`
+				Name     string `json:"name"`
+				Avatar   string `json:"avatar"`
+				Password string `json:"password"`
 			}
 			if err := json.Unmarshal(msg.Payload, &info); err != nil {
 				log.Printf("join parse error: %v", err)
 				continue
+			}
+			// Validate password before admitting the client.
+			if c.hub.password != "" && c.hub.password != info.Password {
+				errPayload, _ := json.Marshal(map[string]string{"error": "Неверный пароль комнаты"})
+				c.hub.sendTo(c, WSMessage{Type: "error", Payload: errPayload})
+				return
 			}
 			c.Participant.Name = info.Name
 			c.Participant.Avatar = info.Avatar
@@ -268,12 +287,13 @@ func (c *Client) readPump() {
 				payload: msg.Payload,
 			}
 
-		case "speaking", "screen-share", "muted", "status", "chat", "game":
+		case "speaking", "screen-share", "muted", "deafened", "webcam", "status", "chat", "game":
 			if !c.joined {
 				continue
 			}
 			c.hub.forward <- &forwardMsg{
 				from:    c.Participant.ID,
+				to:      msg.To,
 				msgType: msg.Type,
 				payload: msg.Payload,
 			}

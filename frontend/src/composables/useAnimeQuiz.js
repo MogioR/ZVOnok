@@ -128,6 +128,12 @@ export async function prefetchScreenshots(animeIds) {
   }
 }
 
+// ─── Room awareness ───────────────────────────────────────────────────────────
+const _currentRoom = { value: 'default' }
+export function setQuizRoom(id) { _currentRoom.value = id || 'default' }
+
+function quizUrl(path) { return `/api/quiz/${path}?room=${_currentRoom.value}` }
+
 // ─── HTTP actions → server quiz API ──────────────────────────────────────────
 async function _post(path, body) {
   const res = await fetch(path, {
@@ -154,7 +160,7 @@ export async function openLobby(player, settings = {}) {
       .slice(0, Math.max(rounds, 20))  // send a bit more so server can trim to exactly rounds
       .map(({ id, name, russian, poster }) => ({ id, name, russian, poster }))
 
-    await _post('/api/quiz/lobby', {
+    await _post(quizUrl('lobby'), {
       settings: { rounds },
       questions,
       players: player ? [{ id: player.id, name: player.name, avatar: player.avatar ?? '' }] : [],
@@ -180,25 +186,25 @@ export async function retryLoad(player, settings) {
 }
 
 export async function joinLobby(player) {
-  await _post('/api/quiz/join', { id: player.id, name: player.name, avatar: player.avatar ?? '' })
+  await _post(quizUrl('join'), { id: player.id, name: player.name, avatar: player.avatar ?? '' })
 }
 
 export async function startGame() {
-  await _post('/api/quiz/start', {})
+  await _post(quizUrl('start'), {})
 }
 
 export async function submitAnswer(playerId, playerName, text) {
-  const res  = await _post('/api/quiz/answer', { playerId, playerName, text })
+  const res  = await _post(quizUrl('answer'), { playerId, playerName, text })
   const json = await res.json()
-  return json  // { correct: bool }
+  return json
 }
 
 export async function stopGame() {
-  await _post('/api/quiz/stop', {})
+  await _post(quizUrl('stop'), {})
 }
 
 export async function playAgain() {
-  await _post('/api/quiz/again', {})
+  await _post(quizUrl('again'), {})
 }
 
 // ─── Background prefetch on module load ──────────────────────────────────────
@@ -216,12 +222,10 @@ export function useAnimeQuiz() {
     loadError,
     isLoadingPool,
     QUESTIONS_PER_GAME,
-    // helpers
     getStageImage,
     screenshotCount,
     loadScreenshots,
     prefetchScreenshots,
-    // actions (all return promises)
     openLobby,
     retryLoad,
     joinLobby,
@@ -229,5 +233,6 @@ export function useAnimeQuiz() {
     submitAnswer,
     stopGame,
     playAgain,
+    setQuizRoom,
   }
 }

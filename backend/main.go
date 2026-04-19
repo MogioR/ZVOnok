@@ -21,55 +21,160 @@ func main() {
 		staticDir = "./static"
 	}
 
-	hub := newHub()
-	go hub.run()
+	rooms := newRoomManager()
 
-	music     := newMusicManager(hub)
-	quiz      := newQuizManager(hub)
-	musicQuiz := newMusicQuizManager(hub)
+	// roomFromReq returns the room indicated by the optional ?room= query param.
+	// Defaults to the default room when the param is absent or unknown.
+	roomFromReq := func(r *http.Request) *Room {
+		id := r.URL.Query().Get("room")
+		if id == "" {
+			id = DefaultRoomID
+		}
+		room := rooms.Get(id)
+		if room == nil {
+			room = rooms.Get(DefaultRoomID)
+		}
+		return room
+	}
 
+	// ─── WebSocket ──────────────────────────────────────────────────────────────
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		serveWs(hub, w, r)
+		roomID := r.URL.Query().Get("room")
+		if roomID == "" {
+			roomID = DefaultRoomID
+		}
+		room := rooms.Get(roomID)
+		if room == nil {
+			http.Error(w, "room not found", http.StatusNotFound)
+			return
+		}
+		serveWs(room.hub, w, r)
 	})
 
+	// ─── ICE servers ────────────────────────────────────────────────────────────
 	http.HandleFunc("/ice-servers", handleIceServers)
 
-	// Anime data proxies (Shikimori)
+	// ─── Room management API ────────────────────────────────────────────────────
+
+	// GET /api/rooms/info?room=<id>  → {exists, hasPassword, roomId}
+	http.HandleFunc("/api/rooms/info", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("room")
+		info := rooms.Info(id)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(info)
+	})
+
+	// POST /api/rooms/create  body: {roomId, password}  → {roomId, hasPassword}
+	http.HandleFunc("/api/rooms/create", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			RoomID   string `json:"roomId"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RoomID == "" {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		room := rooms.Create(body.RoomID, body.Password)
+		if room == nil {
+			http.Error(w, "room already exists or invalid ID", http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"roomId":      room.ID,
+			"hasPassword": room.hub.password != "",
+		})
+	})
+
+	// ─── Anime data proxies (Shikimori) ─────────────────────────────────────────
 	http.HandleFunc("/api/quiz/animes", handleQuizAnimes)
 	http.HandleFunc("/api/quiz/screenshots", handleQuizScreenshots)
 	// Music themes + audio proxy (AnimeThemes.moe)
 	http.HandleFunc("/api/quiz/music/themes", handleQuizMusicThemes)
-	http.HandleFunc("/api/quiz/music/audio",  handleQuizMusicAudio)
+	http.HandleFunc("/api/quiz/music/audio", handleQuizMusicAudio)
 
-	// Anime quiz game API (server-side state)
-	http.HandleFunc("/api/quiz/state",        quiz.ServeState)
-	http.HandleFunc("/api/quiz/lobby",         quiz.ServeOpenLobby)
-	http.HandleFunc("/api/quiz/join",          quiz.ServeJoin)
-	http.HandleFunc("/api/quiz/start",         quiz.ServeStart)
-	http.HandleFunc("/api/quiz/answer",        quiz.ServeAnswer)
-	http.HandleFunc("/api/quiz/stop",          quiz.ServeStop)
-	http.HandleFunc("/api/quiz/again",         quiz.ServeAgain)
+	// ─── Anime quiz game API (per-room) ─────────────────────────────────────────
+	http.HandleFunc("/api/quiz/state", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).quiz.ServeState(w, r)
+	})
+	http.HandleFunc("/api/quiz/lobby", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).quiz.ServeOpenLobby(w, r)
+	})
+	http.HandleFunc("/api/quiz/join", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).quiz.ServeJoin(w, r)
+	})
+	http.HandleFunc("/api/quiz/start", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).quiz.ServeStart(w, r)
+	})
+	http.HandleFunc("/api/quiz/answer", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).quiz.ServeAnswer(w, r)
+	})
+	http.HandleFunc("/api/quiz/stop", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).quiz.ServeStop(w, r)
+	})
+	http.HandleFunc("/api/quiz/again", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).quiz.ServeAgain(w, r)
+	})
 
-	// Music quiz game API (server-side state)
-	http.HandleFunc("/api/musicquiz/animenames",  musicQuiz.ServeAnimeNames)
-	http.HandleFunc("/api/musicquiz/reload-pool", musicQuiz.ServeReloadPool)
-	http.HandleFunc("/api/musicquiz/state",       musicQuiz.ServeState)
-	http.HandleFunc("/api/musicquiz/lobby",   musicQuiz.ServeOpenLobby)
-	http.HandleFunc("/api/musicquiz/join",    musicQuiz.ServeJoin)
-	http.HandleFunc("/api/musicquiz/start",   musicQuiz.ServeStart)
-	http.HandleFunc("/api/musicquiz/answer",  musicQuiz.ServeAnswer)
-	http.HandleFunc("/api/musicquiz/stop",    musicQuiz.ServeStop)
-	http.HandleFunc("/api/musicquiz/again",   musicQuiz.ServeAgain)
+	// ─── Music quiz game API (per-room) ─────────────────────────────────────────
+	http.HandleFunc("/api/musicquiz/animenames", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeAnimeNames(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/reload-pool", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeReloadPool(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/state", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeState(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/lobby", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeOpenLobby(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/join", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeJoin(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/start", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeStart(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/answer", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeAnswer(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/stop", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeStop(w, r)
+	})
+	http.HandleFunc("/api/musicquiz/again", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).musicQuiz.ServeAgain(w, r)
+	})
 
-	// Music bot API
-	http.HandleFunc("/api/music/stream", music.ServeStream)
-	http.HandleFunc("/api/music/state", music.ServeState)
-	http.HandleFunc("/api/music/search", music.ServeSearch)
-	http.HandleFunc("/api/music/add", music.ServeAdd)
-	http.HandleFunc("/api/music/add-playlist", music.ServeAddPlaylist)
-	http.HandleFunc("/api/music/remove", music.ServeRemove)
-	http.HandleFunc("/api/music/skip", music.ServeSkip)
-	http.HandleFunc("/api/music/clear", music.ServeClear)
+	// ─── Music bot API (per-room) ────────────────────────────────────────────────
+	http.HandleFunc("/api/music/stream", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeStream(w, r)
+	})
+	http.HandleFunc("/api/music/state", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeState(w, r)
+	})
+	http.HandleFunc("/api/music/search", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeSearch(w, r)
+	})
+	http.HandleFunc("/api/music/add", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeAdd(w, r)
+	})
+	http.HandleFunc("/api/music/add-playlist", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeAddPlaylist(w, r)
+	})
+	http.HandleFunc("/api/music/remove", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeRemove(w, r)
+	})
+	http.HandleFunc("/api/music/skip", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeSkip(w, r)
+	})
+	http.HandleFunc("/api/music/clear", func(w http.ResponseWriter, r *http.Request) {
+		roomFromReq(r).music.ServeClear(w, r)
+	})
 
 	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
@@ -78,7 +183,6 @@ func main() {
 }
 
 // handleQuizAnimes proxies Shikimori anime list (avoids browser CORS restrictions).
-// Supports ?page=N to load more pages.
 func handleQuizAnimes(w http.ResponseWriter, r *http.Request) {
 	page := r.URL.Query().Get("page")
 	if page == "" {
@@ -116,8 +220,6 @@ func handleQuizAnimes(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleQuizScreenshots proxies the Shikimori screenshots list for a single anime.
-// Usage: GET /api/quiz/screenshots?id=52991
-// Returns JSON array: [{ "original": "/system/animes/screenshots/...", "preview": "..." }]
 func handleQuizScreenshots(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
@@ -143,21 +245,18 @@ func handleQuizScreenshots(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	w.Header().Set("Content-Type", "application/json")
-	// Screenshots don't change often — cache aggressively
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
 
 // handleQuizMusicThemes proxies the AnimeThemes.moe anime-theme list.
-// Usage: GET /api/quiz/music/themes?page=N
 func handleQuizMusicThemes(w http.ResponseWriter, r *http.Request) {
 	page := r.URL.Query().Get("page")
 	if page == "" {
 		page = "1"
 	}
 
-	// Note: filter[has]=audio is NOT a valid parameter on animethemes.moe — omit it.
 	upstream := fmt.Sprintf(
 		"https://api.animethemes.moe/animetheme"+
 			"?include=animethemeentries.videos,song,anime"+
@@ -193,7 +292,6 @@ func handleQuizMusicThemes(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleQuizMusicAudio proxies audio files from a.animethemes.moe.
-// Usage: GET /api/quiz/music/audio?url=https://a.animethemes.moe/...
 // Supports Range requests so the browser can seek within the audio.
 func handleQuizMusicAudio(w http.ResponseWriter, r *http.Request) {
 	rawURL := r.URL.Query().Get("url")
@@ -221,7 +319,6 @@ func handleQuizMusicAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Forward relevant headers
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)

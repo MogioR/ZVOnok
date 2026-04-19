@@ -51,10 +51,15 @@ setTimeout(loadMusicAnimeNames, 15000)
 export async function retryPoolLoad() {
   try { localStorage.removeItem(NAMES_CACHE_KEY) } catch {}
   musicThemeNames.value = []
-  await fetch('/api/musicquiz/reload-pool', { method: 'POST' })
-  // Re-schedule names fetch — pool needs time to reload
+  await fetch(`/api/musicquiz/reload-pool?room=${_currentRoom.value}`, { method: 'POST' })
   setTimeout(loadMusicAnimeNames, 45000)
 }
+
+// ─── Room awareness ───────────────────────────────────────────────────────────
+const _currentRoom = { value: 'default' }
+export function setMusicQuizRoom(id) { _currentRoom.value = id || 'default' }
+
+function mqUrl(path) { return `/api/musicquiz/${path}?room=${_currentRoom.value}` }
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 async function _post(path, body) {
@@ -72,11 +77,8 @@ async function _post(path, body) {
 
 // ─── Actions → server musicquiz API ──────────────────────────────────────────
 
-// Open the music quiz lobby.
-// player:   { id, name, avatar }
-// settings: { rounds: number, allowedTypes: string[] }
 export async function openLobby(player, settings = {}) {
-  await _post('/api/musicquiz/lobby', {
+  await _post(mqUrl('lobby'), {
     settings: {
       rounds:       settings.rounds       ?? 10,
       allowedTypes: settings.allowedTypes ?? [],
@@ -86,25 +88,25 @@ export async function openLobby(player, settings = {}) {
 }
 
 export async function joinLobby(player) {
-  await _post('/api/musicquiz/join', { id: player.id, name: player.name, avatar: player.avatar ?? '' })
+  await _post(mqUrl('join'), { id: player.id, name: player.name, avatar: player.avatar ?? '' })
 }
 
 export async function startGame() {
-  await _post('/api/musicquiz/start', {})
+  await _post(mqUrl('start'), {})
 }
 
 export async function submitAnswer(playerId, playerName, text) {
-  const res  = await _post('/api/musicquiz/answer', { playerId, playerName, text })
+  const res  = await _post(mqUrl('answer'), { playerId, playerName, text })
   const json = await res.json()
-  return json  // { correct: bool }
+  return json
 }
 
 export async function stopGame() {
-  await _post('/api/musicquiz/stop', {})
+  await _post(mqUrl('stop'), {})
 }
 
 export async function playAgain() {
-  await _post('/api/musicquiz/again', {})
+  await _post(mqUrl('again'), {})
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────────
@@ -116,5 +118,6 @@ export function useMusicQuiz() {
     submitAnswer,
     stopGame,
     playAgain,
+    setMusicQuizRoom,
   }
 }
